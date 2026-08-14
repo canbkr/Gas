@@ -789,7 +789,7 @@
     BP, Türkiye'deki dağıtıcı fiyat listelerinde ayrı yayınlanmadığı için kaynakta yer almıyor.
     İstasyon konumları OpenStreetMap'ten, sürüş mesafeleri OSRM'den alınır; yol tarifi Google Maps'te açılır.
     Araç varsayılanları Ford Courier içindir, tüketim değerini kendi aracınıza göre değiştirebilirsiniz.
-    <b>Sürüm: v120</b> ·
+    <b>Sürüm: v121</b> ·
     Diğer kaynaklar: <a href="https://www.petrolofisi.com.tr/akaryakit-fiyatlari/mersin-akaryakit-fiyatlari" target="_blank" rel="noopener">Petrol Ofisi</a> ·
     <a href="https://www.opet.com.tr/akaryakit-fiyatlari/mersin" target="_blank" rel="noopener">Opet</a> ·
     <a href="https://www.aytemiz.com.tr/akaryakit-fiyatlari/benzin-fiyatlari/mersin-benzin-fiyati" target="_blank" rel="noopener">Aytemiz</a> ·
@@ -3748,37 +3748,34 @@ function renderTripRoutes(){
     }
     setTimeout(() => tripMapObj.invalidateSize(), 100);
     tripLayer.clearLayers();
-    /* Başlangıç ve varış da duraklar gibi etiketli olsun — çıplak iğne hangisi belli olmuyordu */
-    const endMark = (loc, text, col, icon) => {
+    /* Başlangıç, duraklar ve varış tek bir görsel aile: ince damla iğne, koyu füme gövde,
+       beyaz kontur, içinde A / 1 / B. Renkli disk ve emoji yok — harita sade kalsın. */
+    const pinSvg = (glyph, sub) =>
+      '<svg width="30" height="40" viewBox="0 0 30 40" aria-hidden="true">' +
+        '<path d="M15 38.5C15 38.5 27.5 23.2 27.5 14.4A12.5 12.5 0 1 0 2.5 14.4C2.5 23.2 15 38.5 15 38.5Z" ' +
+          'fill="#2b3440" stroke="#ffffff" stroke-width="2.4"/>' +
+        (sub ? '<circle cx="15" cy="14.4" r="7.6" fill="none" stroke="#ffffff" stroke-width="1.1" opacity=".45"/>' : '') +
+        '<text x="15" y="19.4" text-anchor="middle" font-size="' + (String(glyph).length > 1 ? 11 : 14) + '" ' +
+          'font-weight="800" fill="#ffffff" font-family="system-ui,Segoe UI,Arial">' + glyph + '</text>' +
+      '</svg>';
+    const endMark = (loc, text, glyph) => {
       const html =
-        '<div style="transform:translate(-50%,-100%);display:flex;flex-direction:column;align-items:center;line-height:1">' +
-          '<div style="background:' + col + ';color:#fff;font-weight:800;font-size:11.5px;letter-spacing:.4px;' +
-            'padding:3px 10px;border-radius:999px;white-space:nowrap;border:2px solid #fff;' +
-            'box-shadow:0 2px 7px rgba(0,0,0,.45);margin-bottom:2px">' + text + '</div>' +
-          '<div style="width:15px;height:15px;background:' + col + ';transform:rotate(45deg);margin-top:-9px;' +
-            'border-right:2px solid #fff;border-bottom:2px solid #fff"></div>' +
-          '<div style="width:34px;height:34px;border-radius:50%;background:' + col + ';color:#fff;font-size:17px;' +
-            'display:flex;align-items:center;justify-content:center;border:4px solid #fff;' +
-            'box-shadow:0 3px 9px rgba(0,0,0,.5);margin-top:-3px">' + icon + '</div>' +
-          '<div style="width:8px;height:8px;border-radius:50%;background:' + col + ';border:2px solid #fff;margin-top:-2px"></div>' +
+        '<div style="transform:translate(-50%,-100%);display:flex;flex-direction:column;align-items:center;line-height:1;' +
+          'filter:drop-shadow(0 2px 4px rgba(0,0,0,.35))">' +
+          '<div style="background:#fff;color:#1b2430;font-weight:800;font-size:11px;letter-spacing:.5px;' +
+            'padding:2px 8px;border-radius:6px;white-space:nowrap;border:1.5px solid #2b3440;margin-bottom:3px">' + text + '</div>' +
+          pinSvg(glyph, false) +
         '</div>';
       L.marker([loc.lat, loc.lon], { icon: L.divIcon({ className:"", html, iconSize:[0,0] }), zIndexOffset: 1300 })
         .addTo(tripLayer).bindPopup("<b>" + text + "</b><br>" + loc.label);
     };
-    endMark(fromLoc, "BAŞLANGIÇ", "#0a8a3a", "🚩");
-    endMark(toLoc,   "VARIŞ",     "#c2185b", "🏁");
+    endMark(fromLoc, "BAŞLANGIÇ", "A");
+    endMark(toLoc,   "VARIŞ",     "B");
     // ara duraklar: numaralı mavi madalyon
-    // Duraklar: numarası bayrağın İÇİNDE yazan direkli bayrak — yazı + daire ikilisi yer kaplıyordu
+    // Duraklar: başlangıç/varışla aynı iğne, içinde durak numarası
     stops.map(x => x.loc).filter(Boolean).forEach((sl, si) => {
-      const html =
-        '<div style="transform:translate(-6px,-100%);filter:drop-shadow(0 2px 5px rgba(0,0,0,.45))">' +
-        '<svg width="46" height="46" viewBox="0 0 46 46" aria-hidden="true">' +
-          '<rect x="4" y="3" width="4" height="42" rx="2" fill="#0f4c8c" stroke="#fff" stroke-width="1.5"/>' +
-          '<path d="M7 4 H42 L34 15.5 L42 27 H7 Z" fill="#2a78d6" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/>' +
-          '<text x="23" y="21" text-anchor="middle" font-size="15" font-weight="900" fill="#fff" ' +
-            'font-family="system-ui,Segoe UI,Arial">' + (si+1) + '</text>' +
-          '<circle cx="6" cy="44" r="3.4" fill="#0f4c8c" stroke="#fff" stroke-width="1.5"/>' +
-        '</svg></div>';
+      const html = '<div style="transform:translate(-50%,-100%);filter:drop-shadow(0 2px 4px rgba(0,0,0,.35))">' +
+        pinSvg(String(si + 1), true) + '</div>';
       L.marker([sl.lat, sl.lon], { icon: L.divIcon({ className:"", html, iconSize:[0,0] }), zIndexOffset: 1200 })
         .addTo(tripLayer).bindPopup("<b>Durak " + (si+1) + "</b><br>" + sl.label);
     });
@@ -3858,11 +3855,9 @@ function renderTripRoutes(){
           chip('<span style="color:#e2711d;display:inline-flex">' + FLAME("#e2711d") + '</span> 🔥 Benzinlik (yol kenarı)') +
           chip('<span style="color:#12a94e;display:inline-flex">' + FLAME("#12a94e") + '</span> Öneri #1 — en uygun (yeşil alev)') +
           chip('<span style="color:#12919e;display:inline-flex">' + FLAME("#12919e") + '</span> H1, H2… hat hat en ucuz') +
-          chip('<span style="width:15px;height:15px;border-radius:50%;background:#0a8a3a;border:2px solid #fff;display:inline-block"></span> Başlangıç / Varış') +
-          chip('<svg width="17" height="17" viewBox="0 0 46 46" style="flex:none">' +
-            '<rect x="4" y="3" width="4" height="42" rx="2" fill="#0f4c8c"/>' +
-            '<path d="M7 4 H42 L34 15.5 L42 27 H7 Z" fill="#2a78d6" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/>' +
-            '</svg> Ara durak (bayrakta durak no)') +
+          chip('<svg width="13" height="17" viewBox="0 0 30 40" style="flex:none">' +
+            '<path d="M15 38.5C15 38.5 27.5 23.2 27.5 14.4A12.5 12.5 0 1 0 2.5 14.4C2.5 23.2 15 38.5 15 38.5Z" fill="#2b3440" stroke="#fff" stroke-width="2.4"/>' +
+            '</svg> A başlangıç · 1,2,3 durak · B varış') +
           (rkL ? rkL.list.map(k => chip(dashSample(k, "#444", 26) + ' ' + k.label)).join("") : '') +
         '</div>' +
         bar +
@@ -4454,7 +4449,7 @@ async function renderRouteStations(route, seq){
         '<div class="mini" style="margin-top:4px">En pahalı: <b>' + (pricey.s.brand || "İstasyon") + '</b> km ' + Math.round(pricey.s.km) +
         (pricey.s.city ? " · " + pricey.s.city.name : "") + ' ≈ ' + fmt(pricey.price) + ' TL/lt' +
         (save && save > 0 ? ' — en ucuzda doldurursan <b>~' + save + ' TL</b> fark eder (' + car2.tank + ' lt)' : '') + '</div>' +
-        (segWin.filter(w => w.x).length > 1
+        (segs.length > 1 && segWin.filter(w => w.x).length >= 1
           ? '<div style="margin-top:9px;padding-top:8px;border-top:1px dashed var(--border)">' +
             '<b style="font-size:13.5px">🧭 Hat hat en ucuz</b>' +
             '<div class="mini" style="margin-top:2px">Tek "en ucuz" rotanın bir ucunda kalabiliyor; her bölümün kendi en ucuzu ' +
