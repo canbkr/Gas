@@ -795,7 +795,7 @@
     BP, Türkiye'deki dağıtıcı fiyat listelerinde ayrı yayınlanmadığı için kaynakta yer almıyor.
     İstasyon konumları OpenStreetMap'ten, sürüş mesafeleri OSRM'den alınır; yol tarifi Google Maps'te açılır.
     Araç varsayılanları Ford Courier içindir, tüketim değerini kendi aracınıza göre değiştirebilirsiniz.
-    <b>Sürüm: v122</b> ·
+    <b>Sürüm: v123</b> ·
     Diğer kaynaklar: <a href="https://www.petrolofisi.com.tr/akaryakit-fiyatlari/mersin-akaryakit-fiyatlari" target="_blank" rel="noopener">Petrol Ofisi</a> ·
     <a href="https://www.opet.com.tr/akaryakit-fiyatlari/mersin" target="_blank" rel="noopener">Opet</a> ·
     <a href="https://www.aytemiz.com.tr/akaryakit-fiyatlari/benzin-fiyatlari/mersin-benzin-fiyati" target="_blank" rel="noopener">Aytemiz</a> ·
@@ -1409,7 +1409,9 @@ function renderTiles(){
   for (const m of ["benzin","motorin","lpg"]){
     const have = fr.filter(r => r[m] != null);
     if (!have.length){ tiles.push({label:"En ucuz "+METRIC_LABEL[m], value:"—", meta:"veri yok"}); continue; }
-    const best = have.reduce((a,b) => a[m] <= b[m] ? a : b);
+    const bestC = cheapestFuel(m);                       // aykırı/bayat değerler elenmiş hâli
+    const best = bestC ? { brand: bestC.brand, [m]: bestC.price }
+                       : have.reduce((a,b) => a[m] <= b[m] ? a : b);
     const avg = robustAvg(have.map(r => r[m]));
     tiles.push({
       icon: FLAME(FUEL_FLAME[m]),
@@ -1461,7 +1463,8 @@ function renderTable(){
   const best = {}, ranges = {};
   for (const m of ["benzin","motorin","lpg"]){
     const have = fr.filter(r => r[m] != null);
-    best[m] = have.length ? Math.min(...have.map(r => r[m])) : null;
+    const bc = cheapestFuel(m);
+    best[m] = bc ? bc.price : (have.length ? Math.min(...have.map(r => r[m])) : null);
     ranges[m] = heatRange(fr, m);
   }
   document.getElementById("tbody").innerHTML = d.map(r => {
@@ -1514,11 +1517,8 @@ function renderQuickBar(){
     return chip(lab + ' <b>' + fmt(v) + ' ₺</b>' + d);
   };
   [mk("benzin","⛽"), mk("motorin","🛢"), mk("lpg","🔥 LPG")].filter(Boolean).forEach(c => parts.push(c));
-  const hb = fr.filter(r => r.benzin != null);
-  if (hb.length){
-    const best = hb.reduce((a,b) => a.benzin <= b.benzin ? a : b);
-    parts.push(chip('🏆 En ucuz: <b>' + best.brand + '</b>'));
-  }
+  const bestB = cheapestFuel("benzin");
+  if (bestB) parts.push(chip('🏆 En ucuz: <b>' + bestB.brand + '</b>'));
   const carEl = document.getElementById("carSel");
   const car = carEl ? CARS[carEl.value] : null;
   if (car){
@@ -3367,11 +3367,15 @@ function drawMapLegend(){
   if (typeof L === "undefined" || !tripMapObj) return;
   if (tripLegendCtl){ try { tripMapObj.removeControl(tripLegendCtl); } catch(e){} tripLegendCtl = null; }
 }
+/* "En ucuz" seçilirken piyasadan kopuk değerler dışarıda kalmalı: bir marka güncel tarihli ama
+   %12 düşük fiyat yayınlıyorsa (eski kalmış ya da hatalı kayıt) onu "en ucuz" diye sunmak
+   yol maliyetini de yanlış hesaplatıyor. priceOf zaten medyandan sapmayı eliyor — onu kullanıyoruz. */
 function cheapestFuel(fuel){
-  const have = freshRows().filter(r => r[fuel] != null);
+  const have = freshRows().filter(r => r[fuel] != null)
+    .map(r => ({ brand: r.brand, price: priceOf(r.brand, fuel) }))
+    .filter(x => x.price != null);
   if (!have.length) return null;
-  const best = have.reduce((a,b) => a[fuel] <= b[fuel] ? a : b);
-  return { price: best[fuel], brand: best.brand };
+  return have.reduce((a,b) => a.price <= b.price ? a : b);
 }
 async function pickPlace(inpId, resId, assign){
   const q = document.getElementById(inpId).value.trim();
@@ -3857,7 +3861,9 @@ function renderTripRoutes(){
         line.bindTooltip("Rota " + (i+1) + " · " + (rt.distance/1000).toFixed(0) + " km · " + fmtDur(rt.duration) + " — seçmek için tıkla");
       }
     });
-    tripRoutes.forEach((rt, i) => { if (rt && rt.geometry) routeBadge(rt, i, i === selRoute); });
+    // Rozet yalnızca birden fazla rota varken anlamlı; tek rotada haritayı boşuna kapatıyordu
+    if (tripRoutes.length > 1)
+      tripRoutes.forEach((rt, i) => { if (rt && rt.geometry) routeBadge(rt, i, i === selRoute); });
     // Tüm rotalar ekrana sığsın — alternatif rota seçili rotanın dışında kalıp görünmez olmasın
     let allB = null;
     tripRoutes.forEach(rt => {
