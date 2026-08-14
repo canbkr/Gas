@@ -712,6 +712,7 @@
       <div id="routeChips" class="favbar" style="margin-top:8px"></div>
       <div id="tripStats" class="tiles" style="display:none;margin:10px 0 0"></div>
       <div id="tripTotals" style="margin:10px 0 0"></div>
+      <div id="routeTimeline" style="display:none;margin-top:12px"></div>
       <div id="tripMapWrap" style="position:relative;margin-top:10px">
         <div id="tripMap" style="display:none;height:400px;border-radius:10px;border:1px solid var(--border)"></div>
         <div id="tripSteps" style="display:none;position:absolute;top:10px;right:10px;z-index:900;
@@ -795,7 +796,7 @@
     BP, Türkiye'deki dağıtıcı fiyat listelerinde ayrı yayınlanmadığı için kaynakta yer almıyor.
     İstasyon konumları OpenStreetMap'ten, sürüş mesafeleri OSRM'den alınır; yol tarifi Google Maps'te açılır.
     Araç varsayılanları Ford Courier içindir, tüketim değerini kendi aracınıza göre değiştirebilirsiniz.
-    <b>Sürüm: v123</b> ·
+    <b>Sürüm: v125</b> ·
     Diğer kaynaklar: <a href="https://www.petrolofisi.com.tr/akaryakit-fiyatlari/mersin-akaryakit-fiyatlari" target="_blank" rel="noopener">Petrol Ofisi</a> ·
     <a href="https://www.opet.com.tr/akaryakit-fiyatlari/mersin" target="_blank" rel="noopener">Opet</a> ·
     <a href="https://www.aytemiz.com.tr/akaryakit-fiyatlari/benzin-fiyatlari/mersin-benzin-fiyati" target="_blank" rel="noopener">Aytemiz</a> ·
@@ -3627,11 +3628,149 @@ function fmtDur(sec){
   const m = Math.round(sec / 60);
   return m >= 60 ? Math.floor(m / 60) + " sa " + (m % 60) + " dk" : m + " dk";
 }
+/* ---------- ROTA ŞERİDİ (kompakt zaman çizelgesi) ----------
+   Uzun bir rotayı haritadan okumak zor: nerede ne kadar HGS ödeyeceğim, hangi bölümde kaç km var,
+   o bölümün en ucuz benzincisi kim? Hepsi tek bakışta görünsün diye yatay şerit.
+   Araç figürü GPS'e göre şerit üzerinde canlı ilerler. */
+let tripCurrentRoute = null, tripWatchId = null, tripCarKm = null, tripCarOff = null, carLayer = null;
+let lastSegWinners = null;
+
+function renderRouteTimeline(route){
+  const el = document.getElementById("routeTimeline");
+  if (!el) return;
+  tripCurrentRoute = route || tripCurrentRoute;
+  route = tripCurrentRoute;
+  if (!route || !route.geometry || !fromLoc || !toLoc){ el.style.display = "none"; return; }
+  const total = route.distance / 1000;
+  if (!(total > 0)){ el.style.display = "none"; return; }
+  const stopLocs = stops.map(x => x.loc).filter(Boolean);
+  const names = [fromLoc.label, ...stopLocs.map(x => x.label), toLoc.label];
+  const legs = (route.legs || []).filter(l => l.distance);
+  const bounds = [0];
+  if (legs.length === names.length - 1){ let a = 0; legs.forEach(l => { a += l.distance / 1000; bounds.push(a); }); }
+  else { bounds.length = 1; bounds.push(total); }
+  const tsegs = tollSegmentsOf(route);
+  const pct = km => Math.max(0, Math.min(100, km / total * 100));
+  const shortName = n => { const t = String(n || "").split(",")[0].trim(); return t.length > 18 ? t.slice(0, 17) + "…" : t; };
+
+  // düğümler (A, duraklar, B)
+  const nodes = names.map((n, i) => {
+    const p = pct(bounds[Math.min(i, bounds.length - 1)]);
+    const glyph = i === 0 ? "A" : i === names.length - 1 ? "B" : String(i);
+    const align = i === 0 ? "translateX(0)" : i === names.length - 1 ? "translateX(-100%)" : "translateX(-50%)";
+    return '<div style="position:absolute;left:' + p + '%;top:0;bottom:0;transform:' + align + ';display:flex;' +
+      'flex-direction:column;align-items:' + (i === 0 ? "flex-start" : i === names.length-1 ? "flex-end" : "center") + ';">' +
+      '<div style="font-size:12px;font-weight:800;white-space:nowrap;color:#1b2430">' + shortName(n) + '</div>' +
+      '<div style="flex:1;width:2px;background:#2b3440;margin:3px 0"></div>' +
+      '<div style="width:20px;height:20px;border-radius:50%;background:#2b3440;color:#fff;font-size:11px;font-weight:800;' +
+      'display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35)">' + glyph + '</div>' +
+      '</div>';
+  }).join("");
+
+  // bölümler: üstte HGS, altta km + en ucuz benzinci
+  const segsHtml = [];
+  for (let i = 0; i < bounds.length - 1; i++){
+    const a = bounds[i], b = bounds[i+1];
+    const w = (b - a) / total * 100;
+    const fee = Math.round(feeBetween(tsegs, a, b) || 0);
+    const win = (lastSegWinners || []).find(x => x.x && x.from <= a + 1 && x.to >= b - 1)
+             || (lastSegWinners || []).find(x => x.x && x.x.s.km >= a && x.x.s.km <= b);
+    segsHtml.push('<div style="position:absolute;left:' + pct(a) + '%;width:' + w + '%;top:0;bottom:0;' +
+      'display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:0 4px;overflow:hidden">' +
+      '<div style="font-size:11.5px;font-weight:800;white-space:nowrap;color:' + (fee > 0 ? "#c0392b" : "#0f9d58") + '">' +
+        (fee > 0 ? "🛣 " + fee.toLocaleString("tr-TR") + " TL" : "HGS yok") + '</div>' +
+      '<div style="text-align:center;line-height:1.3">' +
+        '<div style="font-size:12.5px;font-weight:800;color:#1b2430">' + Math.round(b - a).toLocaleString("tr-TR") + ' km</div>' +
+        '<div style="font-size:11px;white-space:nowrap;color:#5b6672">' +
+          (win && win.x ? '⛽ ' + (win.x.s.brand || "İstasyon") + ' ' + fmt(win.x.price) + ' TL'
+             : '<span style="opacity:.6">' + (lastSegWinners ? "uygun istasyon yok" : "istasyon aranıyor…") + '</span>') + '</div>' +
+      '</div></div>');
+  }
+
+  const car = tripCarKm != null
+    ? '<div title="Konumunuz" style="position:absolute;left:' + pct(tripCarKm) + '%;top:50%;transform:translate(-50%,-50%);' +
+      'z-index:5;font-size:19px;line-height:1;filter:drop-shadow(0 1px 3px rgba(0,0,0,.5))">🚗</div>'
+    : "";
+  const carNote = tripCarKm != null
+    ? '<span style="color:#1a73e8;font-weight:700">🚗 ' + Math.round(tripCarKm).toLocaleString("tr-TR") + '. km · ' +
+      'kalan ' + Math.round(total - tripCarKm).toLocaleString("tr-TR") + ' km' +
+      (tripCarOff != null && tripCarOff > 2 ? ' · rotadan ' + tripCarOff.toFixed(1) + ' km uzakta' : '') + '</span>'
+    : tripWatchId != null
+      ? '<span style="color:#1a73e8;font-weight:700"><span class="spinner"></span>' +
+        (tripCarOff != null ? 'rotadan ' + Math.round(tripCarOff) + ' km uzaktasınız' : 'konum bekleniyor…') + '</span>'
+      : '<span style="color:var(--text-muted)">Canlı takip kapalı</span>';
+
+  el.style.display = "block";
+  el.innerHTML =
+    '<div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px 10px;background:var(--surface-1)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">' +
+        '<b style="font-size:13.5px">🧭 Rota şeridi — ' + Math.round(total).toLocaleString("tr-TR") + ' km · ' + fmtDur(route.duration) + '</b>' +
+        '<span style="display:flex;gap:9px;align-items:center;font-size:12px">' + carNote +
+        '<button class="btn" id="trackBtn" style="font-size:12px;font-weight:700;' +
+        (tripWatchId != null ? 'border-color:var(--accent);color:var(--accent)' : '') + '">' +
+        (tripWatchId != null ? '⏹ Takibi durdur' : '🚗 Canlı takip') + '</button></span>' +
+      '</div>' +
+      '<div style="overflow-x:auto"><div style="position:relative;min-width:' +
+        Math.max(560, (bounds.length - 1) * 190) + 'px;height:112px">' +
+        '<div style="position:absolute;left:0;right:0;top:50%;height:14px;transform:translateY(-50%);' +
+          'background:#2b3440;border-radius:7px"></div>' +
+        segsHtml.join("") + nodes + car +
+      '</div></div>' +
+    '</div>';
+  const tb = document.getElementById("trackBtn");
+  if (tb) tb.addEventListener("click", () => toggleTripTrack());
+}
+
+/* GPS ile canlı konum: rotanın hangi km'sindesin? */
+function toggleTripTrack(){
+  if (tripWatchId != null){
+    try { navigator.geolocation.clearWatch(tripWatchId); } catch(e){}
+    tripWatchId = null; tripCarKm = null; tripCarOff = null;
+    if (carLayer) carLayer.clearLayers();
+    renderRouteTimeline();
+    return;
+  }
+  if (!navigator.geolocation){ alert("Tarayıcınız konum desteklemiyor."); return; }
+  tripWatchId = navigator.geolocation.watchPosition(pos => {
+    const rt = tripCurrentRoute;
+    if (!rt || !rt.geometry) return;
+    const c = rt.geometry.coordinates;
+    const me = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+    let best = 1e9, bestKm = 0, acc = 0;
+    for (let i = 0; i < c.length; i++){
+      if (i > 0) acc += haversine({ lat: c[i-1][1], lon: c[i-1][0] }, { lat: c[i][1], lon: c[i][0] });
+      const d = haversine(me, { lat: c[i][1], lon: c[i][0] });
+      if (d < best){ best = d; bestKm = acc; }
+    }
+    tripCarOff = best;
+    tripCarKm = best <= 30 ? bestKm : null;      // rotadan çok uzaktaysan şeritte gösterme
+    renderRouteTimeline();
+    if (typeof L !== "undefined" && tripMapObj){
+      if (!carLayer) carLayer = L.layerGroup().addTo(tripMapObj);
+      carLayer.clearLayers();
+      L.marker([me.lat, me.lon], { zIndexOffset: 1400, icon: L.divIcon({ className:"", iconSize:[0,0],
+        html: '<div style="transform:translate(-50%,-50%);font-size:22px;filter:drop-shadow(0 2px 4px rgba(0,0,0,.5))">🚗</div>' }) })
+        .addTo(carLayer).bindPopup("Buradasınız · " + Math.round(bestKm) + ". km");
+    }
+  }, () => { tripWatchId = null; renderRouteTimeline(); },
+  { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 });
+  renderRouteTimeline();
+}
+
 /* ---------- HARİTA ÜSTÜ İLERLEME PANELİ ----------
    Uzun rotalarda gişe ve istasyon aramaları 10-20 saniye sürüyor; ekran o sırada sessiz kalınca
    "çalışmıyor" gibi duruyordu. Hangi adım sürüyor, hangisi bitti — kullanıcı görsün. */
-let tripSteps = {}, tripStepOrder = [], tripStepsTimer = null;
-function resetTripSteps(){ tripSteps = {}; tripStepOrder = []; clearTimeout(tripStepsTimer); renderTripSteps(); }
+let tripSteps = {}, tripStepOrder = [], tripStepsTimer = null, tripStepsT0 = 0, tripClock = null;
+function resetTripSteps(){
+  tripSteps = {}; tripStepOrder = []; tripStepsT0 = Date.now();
+  clearTimeout(tripStepsTimer); clearInterval(tripClock);
+  tripClock = setInterval(() => { const h = document.getElementById("tripStepsClock"); if (h) h.textContent = elapsedTxt(); }, 500);
+  renderTripSteps();
+}
+function elapsedTxt(){
+  const sec = Math.max(0, Math.round((Date.now() - tripStepsT0) / 1000));
+  return sec < 60 ? sec + " sn" : Math.floor(sec/60) + " dk " + (sec%60) + " sn";
+}
 function tripStep(key, label, state, detail){
   if (!tripSteps[key]) tripStepOrder.push(key);
   tripSteps[key] = { label: label, state: state, detail: detail || "" };
@@ -3642,23 +3781,38 @@ function renderTripSteps(){
   if (!host) return;
   if (!tripStepOrder.length){ host.style.display = "none"; return; }
   host.style.display = "block";
-  const icon = st => st === "ok" ? '<span style="color:#0a8a3a;font-weight:900">✓</span>'
-    : st === "fail" ? '<span style="color:#c0392b;font-weight:900">!</span>'
-    : '<span class="spinner" style="border-top-color:#2a78d6"></span>';
+  const done = tripStepOrder.filter(k => tripSteps[k].state !== "run").length;
+  const pct  = Math.round(done / tripStepOrder.length * 100);
+  const allDone = done === tripStepOrder.length;
+  const mark = st =>
+    st === "ok"   ? '<span style="display:inline-flex;width:15px;height:15px;border-radius:50%;background:#0f9d58;color:#fff;' +
+                    'align-items:center;justify-content:center;font-size:10px;font-weight:900;line-height:1">✓</span>'
+  : st === "fail" ? '<span style="display:inline-flex;width:15px;height:15px;border-radius:50%;background:#d93025;color:#fff;' +
+                    'align-items:center;justify-content:center;font-size:10px;font-weight:900;line-height:1">!</span>'
+  :                 '<span style="display:inline-block;width:15px;height:15px;border-radius:50%;border:2px solid #d6dce4;' +
+                    'border-top-color:#1a73e8;animation:rot .8s linear infinite"></span>';
   host.innerHTML =
-    '<div style="font-weight:800;margin-bottom:4px">Rota hazırlanıyor</div>' +
+    '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px">' +
+      '<span style="font-weight:800;font-size:12.5px;letter-spacing:.2px">' +
+        (allDone ? "Rota hazır" : "Rota hazırlanıyor") + '</span>' +
+      '<span id="tripStepsClock" style="font-size:11.5px;color:#68727f;font-variant-numeric:tabular-nums">' + elapsedTxt() + '</span>' +
+    '</div>' +
+    '<div style="height:4px;border-radius:3px;background:#e7ebf0;overflow:hidden;margin-bottom:8px">' +
+      '<div style="height:100%;width:' + pct + '%;background:' + (allDone ? "#0f9d58" : "#1a73e8") +
+      ';transition:width .35s ease"></div></div>' +
     tripStepOrder.map(k => {
-      const s = tripSteps[k];
-      return '<div style="display:flex;gap:7px;align-items:baseline;margin:2px 0">' +
-        '<span style="width:14px;flex:none;text-align:center">' + icon(s.state) + '</span>' +
-        '<span style="' + (s.state === "ok" ? "color:#3a4756" : "font-weight:600") + '">' + s.label +
-        (s.detail ? ' <b style="color:#1b2430">' + s.detail + '</b>' : '') + '</span></div>';
+      const st = tripSteps[k];
+      return '<div style="display:flex;gap:8px;align-items:flex-start;margin:5px 0">' +
+        '<span style="flex:none;margin-top:1px">' + mark(st.state) + '</span>' +
+        '<span style="font-size:12.3px;line-height:1.35;color:' + (st.state === "run" ? "#1b2430" : "#5b6672") + '">' +
+          '<span style="' + (st.state === "run" ? "font-weight:700" : "") + '">' + st.label + '</span>' +
+          (st.detail ? '<br><span style="color:#1b2430;font-weight:700;font-variant-numeric:tabular-nums">' + st.detail + '</span>' : '') +
+        '</span></div>';
     }).join("");
-  const allDone = tripStepOrder.every(k => tripSteps[k].state === "ok" || tripSteps[k].state === "fail");
   clearTimeout(tripStepsTimer);
   if (allDone){
-    host.innerHTML = host.innerHTML.replace("Rota hazırlanıyor", "Hazır ✓");
-    tripStepsTimer = setTimeout(() => { const h = document.getElementById("tripSteps"); if (h) h.style.display = "none"; }, 6000);
+    clearInterval(tripClock);
+    tripStepsTimer = setTimeout(() => { const h = document.getElementById("tripSteps"); if (h) h.style.display = "none"; }, 7000);
   }
 }
 
@@ -3962,6 +4116,8 @@ function renderTripRoutes(){
   document.getElementById("tripNote").textContent = "Kullanılan pompa fiyatları — " + noteParts.join(" · ") +
     (tolls.length ? " · HGS ≈ " + tcSel.total.toLocaleString("tr-TR") + " TL tek yön / " + (tcSel.total*2).toLocaleString("tr-TR") + " TL gidiş-dönüş (tabloya dahil değildir)." : "");
   renderTripTotals(route);
+  lastSegWinners = null;
+  renderRouteTimeline(route);
   resetTripSteps();
   tripStep("rota", "Rota çizildi", "ok",
     Math.round(route.distance/1000).toLocaleString("tr-TR") + " km · " + fmtDur(route.duration));
@@ -4064,7 +4220,10 @@ async function overpassQuery(q, ms){
 }
 /* Uzun rotalarda tek sorgu çok büyük olur (sunucu/proxy reddeder) → güzergâhı parçalara böl, paralel sor, birleştir */
 async function overpassChunked(pts, kind, around, alive, onPartial){
-  const CH = kind === "fuel" ? 14 : 22;         // yakıt sorgusu daha ağır → daha küçük parça
+  /* HIZ: parça sayısı = gecikme. Her parça ayrı bir istek ve aralarında bekleme vardı;
+     500 km'lik rota 20+ tur sürüyordu. Parça başına nokta sayısını büyütüp (sorgu metni yine kısa),
+     paralelliği artırıp aradaki beklemeyi kaldırdık. */
+  const CH = kind === "fuel" ? 30 : 40;
   const polys = [];
   for (let i = 0; i < pts.length; i += CH){
     const part = pts.slice(Math.max(0, i - 1), i + CH);       // parçalar arasında 1 nokta örtüşsün
@@ -4072,7 +4231,7 @@ async function overpassChunked(pts, kind, around, alive, onPartial){
   }
   const seen = new Set(), out = [];
   let okCount = 0, failCount = 0;
-  const PAR = kind === "fuel" ? 2 : 3;
+  const PAR = kind === "fuel" ? 5 : 6;
   for (let i = 0; i < polys.length; i += PAR){
     if (alive && !alive()) return null;
     const batch = await Promise.all(polys.slice(i, i + PAR).map(poly => {
@@ -4082,7 +4241,7 @@ async function overpassChunked(pts, kind, around, alive, onPartial){
         : "[out:json][timeout:25];(node[barrier=toll_booth](around:" + around + "," + poly + ");" +
           "node[highway=toll_gantry](around:" + around + "," + poly + ");" +
           "way[barrier=toll_booth](around:" + around + "," + poly + "););out center 80;";
-      return overpassQuery(q, 16000);
+      return overpassQuery(q, 12000);
     }));
     batch.forEach(b => {
       if (!b){ failCount++; return; }
@@ -4095,7 +4254,7 @@ async function overpassChunked(pts, kind, around, alive, onPartial){
       });
     });
     if (onPartial && okCount) onPartial(out, { done: Math.min(i + PAR, polys.length), total: polys.length, fail: failCount });
-    if (i + PAR < polys.length) await new Promise(r => setTimeout(r, 250));   // sunucuyu yormayalım
+    if (i + PAR < polys.length) await new Promise(r => setTimeout(r, 60));
   }
   return okCount ? out : null;         // hiçbir parça dönmediyse "servis yok" de
 }
@@ -4181,7 +4340,7 @@ async function renderTollGates(route, seq){
   let acc = 0;
   for (let i = 0; i < coords.length; i++){
     if (i > 0) acc += haversine({ lat: coords[i-1][1], lon: coords[i-1][0] }, { lat: coords[i][1], lon: coords[i][0] });
-    if (!pts.length || acc - kms[kms.length-1] >= 20){ pts.push(coords[i]); kms.push(acc); }
+    if (!pts.length || acc - kms[kms.length-1] >= Math.max(20, totalKm / 60)){ pts.push(coords[i]); kms.push(acc); }
   }
   const segs = tollSegmentsOf(route);
   const tc = tollCostOf(route);
@@ -4329,7 +4488,7 @@ async function renderRouteStations(route, seq){
   /* Örnekleme adımı rota uzunluğuna göre: 2.000 km'lik bir rotada 7 km'de bir örnek almak
      ~290 nokta → onlarca sorgu demek; ücretsiz servis buna yetişemiyor ve hiç istasyon gelmiyordu.
      Nokta sayısını ~130 ile sınırlıyoruz; uzun rotada adım otomatik büyüyor. */
-  const stepKm = Math.max(7, totalKm / 130);
+  const stepKm = Math.max(8, totalKm / 90);
   const pts = [], kms = [];
   let acc = 0;
   for (let i = 0; i < coords.length; i++){
@@ -4433,6 +4592,8 @@ async function renderRouteStations(route, seq){
       const inSeg = ranked.filter(x => x.s.km >= sg.from - 0.01 && x.s.km <= sg.to + 0.01);   // ranked zaten ucuzdan pahalıya
       return Object.assign({}, sg, { x: inSeg.length ? inSeg[0] : null });
     });
+    lastSegWinners = segWin;
+    renderRouteTimeline();
     const segOk = segWin.filter(w => w.x).length;
     if (ranked.length)
       tripStep("ucuz", "Hat hat en ucuz hesaplandı", "ok",
