@@ -694,6 +694,11 @@
         <button class="btn" id="fromMe" title="Kendi GPS konumunu al">📍 Konumum</button>
       </div>
       <div id="fromRes" class="geolist" style="margin-bottom:8px"></div>
+      <div id="stopsWrap"></div>
+      <div class="locbar" style="margin-bottom:8px">
+        <button class="btn" id="addStop" title="Rotaya ara durak ekle">➕ Durak ekle</button>
+        <span class="mini" id="stopHint" style="color:var(--text-muted)">Ara duraklar yazdığın sırayla gezilir · en fazla 8 durak</span>
+      </div>
       <div class="locbar" style="margin-bottom:8px">
         <span class="mini" style="width:62px">Nereye</span>
         <input class="sel" id="toInp" type="text" style="flex:1;min-width:200px" autocomplete="off" placeholder="Adres yazın — başka şehirse şehri de ekleyin (ör. fuat morel mersin)">
@@ -706,11 +711,10 @@
       <div id="routeChips" class="favbar" style="margin-top:8px"></div>
       <div id="tripStats" class="tiles" style="display:none;margin:10px 0 0"></div>
       <div id="tripTotals" style="margin:10px 0 0"></div>
-      <div id="routeCities" style="margin:10px 0 0"></div>
-      <div id="tollGates" style="margin:10px 0 0"></div>
-      <div id="routeStations" style="margin:10px 0 0"></div>
       <div id="tripMap" style="display:none;height:400px;border-radius:10px;border:1px solid var(--border);margin-top:10px"></div>
       <div id="mapLegend" style="display:none;margin-top:8px"></div>
+      <div id="tollGates" style="margin:10px 0 0"></div>
+      <div id="routeStations" style="margin:10px 0 0"></div>
       <div class="tablewrap" id="tripWrap" style="display:none;margin-top:12px">
         <table>
           <thead>
@@ -726,6 +730,7 @@
         </table>
         <p class="hint" style="margin-top:10px" id="tripNote"></p>
       </div>
+      <div id="routeCities" style="margin:14px 0 0"></div>
     </div>
   </div><!-- /tabTrip -->
 
@@ -783,11 +788,11 @@
     BP, Türkiye'deki dağıtıcı fiyat listelerinde ayrı yayınlanmadığı için kaynakta yer almıyor.
     İstasyon konumları OpenStreetMap'ten, sürüş mesafeleri OSRM'den alınır; yol tarifi Google Maps'te açılır.
     Araç varsayılanları Ford Courier içindir, tüketim değerini kendi aracınıza göre değiştirebilirsiniz.
-    <b>Sürüm: v110</b> ·
+    <b>Sürüm: v113</b> ·
     Diğer kaynaklar: <a href="https://www.petrolofisi.com.tr/akaryakit-fiyatlari/mersin-akaryakit-fiyatlari" target="_blank" rel="noopener">Petrol Ofisi</a> ·
     <a href="https://www.opet.com.tr/akaryakit-fiyatlari/mersin" target="_blank" rel="noopener">Opet</a> ·
     <a href="https://www.aytemiz.com.tr/akaryakit-fiyatlari/benzin-fiyatlari/mersin-benzin-fiyati" target="_blank" rel="noopener">Aytemiz</a> ·
-    <a href="https://www.tppd.com.tr/mersin-akaryakit-fiyatlari" target="_blank" rel="noopener">TP</a>
+    <a href="https://www.tppd.com.tr/tr/mersin-akaryakit-fiyatlari" target="_blank" rel="noopener">TP</a>
   </footer>
 </div>
 
@@ -1144,9 +1149,9 @@ function parseCompanyTable(html, cityName){
   const doc = new DOMParser().parseFromString(html, "text/html");
   for (const table of doc.querySelectorAll("table")){
     const ths = [...table.querySelectorAll("th")].map(t => t.textContent.toLowerCase());
-    const bi = ths.findIndex(t => t.includes("kurşunsuz") || t.includes("benzin"));
+    const bi = ths.findIndex(t => t.includes("kurşunsuz") || t.includes("benzin") || t.includes("gasoline") || t.includes("unleaded"));
     const mi = ths.findIndex(t => t.includes("motorin") || t.includes("dizel") || t.includes("diesel"));
-    const li = ths.findIndex(t => t.includes("lpg") || t.includes("otogaz"));
+    const li = ths.findIndex(t => t.includes("lpg") || t.includes("otogaz") || t.includes("autogas"));
     if (bi < 0 || mi < 0) continue;
     const rows = [];
     for (const tr of table.querySelectorAll("tbody tr, tr")){
@@ -1218,6 +1223,9 @@ function applyCompanyPrice(brand, p){
 async function enhanceFromCompanySites(seq){
   const slug = currentCity.slug;
   const htmlJobs = [
+    // TP'nin sayfa adresleri /tr/ ve /en/ önekli; öneksiz adres bazen 404 dönüyordu → üç kalıbı da dene
+    { brand: "TP",           url: "https://www.tppd.com.tr/tr/" + slug + "-akaryakit-fiyatlari" },
+    { brand: "TP",           url: "https://www.tppd.com.tr/en/" + slug + "-oil-prices" },
     { brand: "TP",           url: "https://www.tppd.com.tr/" + slug + "-akaryakit-fiyatlari" },
     { brand: "Aytemiz",      url: "https://www.aytemiz.com.tr/akaryakit-fiyatlari/benzin-fiyatlari/" + slug + "-benzin-fiyati" },
     { brand: "Aytemiz",      url: "https://www.aytemiz.com.tr/akaryakit-fiyatlari/benzin-fiyatlari", city: currentCity.name },  // genel benzin listesi — şehir satırı seçilir
@@ -1249,7 +1257,7 @@ async function enhanceFromCompanySites(seq){
       setSrc(j.brand + " sitesi", "wait");
       try {
         const html = await fetchViaProxies(j.url,
-          t => /benzin/i.test(t) && /(motorin|dizel|diesel)/i.test(t), 25000);
+          t => (/benzin|gasoline|unleaded/i.test(t) && /(motorin|dizel|diesel)/i.test(t)), 25000);
         let p = j.parse ? j.parse(html) : parseCompanyTable(html, j.city || null);
         // makullük bekçisi: takip/agregatör kaynaklı fiyat, ilin güncel medyanından %7+ sapıyorsa bayattır — kullanma
         if (p && j.plausibility){
@@ -2467,7 +2475,10 @@ async function findStationsInner(lat, lon, org, opts){
     } catch(e){
       // Google başarısız → kalıcı ve OKUNUR teşhis göster, açık kaynaklarla devam et
       showErrBox("Google istasyon verisi alınamadı — açık kaynaklarla devam ediliyor. " +
-        (/PERMISSION_DENIED|has not been used|disabled/i.test(e.message)
+        (/referer.{0,12}null|referer.{0,20}blocked/i.test(e.message)
+          ? "Sebep: sayfayı bilgisayardaki DOSYADAN açtınız. Google anahtarı güvenlik gereği yalnızca yayındaki adresten çalışır — " +
+            "canbkr.github.io/Gas/akaryakit-fiyatlari.html adresinden açın. (Dosyadan açınca istasyonlar OpenStreetMap'ten gelir, uygulama yine çalışır.)"
+          : /PERMISSION_DENIED|has not been used|disabled/i.test(e.message)
           ? "Sebep: projede 'Places API (New)' etkin değil. console.cloud.google.com'da üst arama çubuğuna 'Places API (New)' yazıp mavi Enable düğmesine basın, 1-2 dk sonra tekrar deneyin."
           : /API key not valid|INVALID_ARGUMENT/i.test(e.message)
           ? "Sebep: anahtar geçersiz görünüyor — Credentials sayfasından kontrol edin."
@@ -3328,6 +3339,18 @@ function drawMapLegend(route){
         ? '<div style="margin-top:5px;padding-top:5px;border-top:1px solid #ddd;color:#444;white-space:nowrap">' +
           bd.list.slice(0,3).map(p => p.name + " · " + Math.round(p.km) + " km ≈ " + p.fee.toLocaleString("tr-TR") + " TL").join("<br>") + '</div>'
         : '') +
+      (function(){
+        const rk = roadKindBreakdown(route);
+        if (!rk) return "";
+        return '<div style="margin-top:5px;padding-top:5px;border-top:1px solid #ddd">' +
+          '<div style="font-weight:800;margin-bottom:3px">Yol tipi</div>' +
+          rk.list.map(k =>
+            '<div style="display:flex;align-items:center;gap:7px;margin:3px 0;white-space:nowrap">' +
+            dashSample(k, "#333", 26) +
+            '<span>' + k.label + ' <b>' + Math.round(k.km) + ' km</b> ' +
+            '<span style="color:#666">' + k.lanes.split("·")[0].trim() + '</span></span></div>').join("") +
+          '<div style="color:#666;margin-top:3px;white-space:normal">Desen = yol tipi · renk = ücretli/ücretsiz</div></div>';
+      })() +
       (bd ? '<div style="margin-top:5px;padding-top:5px;border-top:1px solid #ddd;font-weight:800">Toplam ' + Math.round(bd.total) + ' km</div>' : '');
     L.DomEvent.disableClickPropagation(d);
     return d;
@@ -3366,6 +3389,63 @@ async function pickPlace(inpId, resId, assign){
   }
   box.innerHTML = '<div class="gi-sub">Bulunamadı — mahalle + ilçe yazmayı ya da koordinat yapıştırmayı deneyin.</div>';
 }
+/* ---------- ARA DURAKLAR ----------
+   Rota artık A→B değil, A→D1→D2→…→B. OSRM birden çok nokta destekliyor; alternatif rota ise
+   yalnızca iki noktalı sorgularda dönüyor, o yüzden durak varken alternatif aranmıyor. */
+const MAX_STOPS = 8;
+let stops = [], stopIdSeq = 0, stopTimers = {};
+function tripPoints(){
+  return [fromLoc, ...stops.map(s => s.loc).filter(Boolean), toLoc].filter(Boolean);
+}
+function renderStops(){
+  const w = document.getElementById("stopsWrap");
+  if (!w) return;
+  const esc = t => String(t || "").replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;");
+  w.innerHTML = stops.map((s, i) =>
+    '<div class="locbar" style="margin-bottom:6px">' +
+      '<span class="mini" style="width:62px;color:var(--accent);font-weight:700">Durak ' + (i+1) + '</span>' +
+      '<input class="sel" id="stopInp-' + s.id + '" type="text" style="flex:1;min-width:180px" autocomplete="off" ' +
+        'placeholder="Ara durak adresi (ör. tarsus otogar)" value="' + esc(s.loc && s.loc.label) + '">' +
+      '<button class="btn" data-up="' + s.id + '" title="Yukarı taşı"' + (i === 0 ? ' disabled style="opacity:.4"' : '') + '>↑</button>' +
+      '<button class="btn" data-down="' + s.id + '" title="Aşağı taşı"' + (i === stops.length-1 ? ' disabled style="opacity:.4"' : '') + '>↓</button>' +
+      '<button class="btn" data-del="' + s.id + '" title="Durağı sil" style="color:var(--critical);border-color:var(--critical)">✕</button>' +
+    '</div>' +
+    '<div id="stopRes-' + s.id + '" class="geolist" style="margin-bottom:6px"></div>').join("");
+  stops.forEach(s => {
+    const inp = document.getElementById("stopInp-" + s.id);
+    if (inp) inp.addEventListener("input", () => {
+      clearTimeout(stopTimers[s.id]);
+      stopTimers[s.id] = setTimeout(() => pickPlace("stopInp-" + s.id, "stopRes-" + s.id, v => { s.loc = v; }), 450);
+    });
+  });
+  w.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", () => {
+    stops = stops.filter(x => x.id !== +b.dataset.del); renderStops(); tryTrip();
+  }));
+  const move = (id, d) => {
+    const i = stops.findIndex(x => x.id === id), j = i + d;
+    if (i < 0 || j < 0 || j >= stops.length) return;
+    const t = stops[i]; stops[i] = stops[j]; stops[j] = t;
+    renderStops(); tryTrip();
+  };
+  w.querySelectorAll("[data-up]").forEach(b => b.addEventListener("click", () => move(+b.dataset.up, -1)));
+  w.querySelectorAll("[data-down]").forEach(b => b.addEventListener("click", () => move(+b.dataset.down, 1)));
+  const hint = document.getElementById("stopHint");
+  const btn = document.getElementById("addStop");
+  if (btn) btn.disabled = stops.length >= MAX_STOPS;
+  if (hint) hint.textContent = stops.length
+    ? stops.length + " durak · toplam " + (stops.length + 2) + " nokta · duraklar yukarıdaki sırayla gezilir" +
+      (stops.length >= MAX_STOPS ? " · sınıra ulaşıldı" : "")
+    : "Ara duraklar yazdığın sırayla gezilir · en fazla 8 durak";
+}
+document.getElementById("addStop").addEventListener("click", () => {
+  if (stops.length >= MAX_STOPS) return;
+  stops.push({ id: ++stopIdSeq, loc: null });
+  renderStops();
+  const last = document.getElementById("stopInp-" + stops[stops.length-1].id);
+  if (last) last.focus();
+});
+renderStops();
+
 let fromTimer = null, toTimer = null;
 document.getElementById("fromInp").addEventListener("input", () => { clearTimeout(fromTimer); fromTimer = setTimeout(() => pickPlace("fromInp","fromRes", v => fromLoc = v), 450); });
 document.getElementById("toInp").addEventListener("input",   () => { clearTimeout(toTimer);   toTimer   = setTimeout(() => pickPlace("toInp","toRes",   v => toLoc = v),   450); });
@@ -3406,8 +3486,10 @@ async function computeTrip(){
   const sum = document.getElementById("tripSummary");
   sum.innerHTML = '<span class="spinner"></span><b style="color:var(--accent)">Rotalar hesaplanıyor…</b> ' + fromLoc.label + " → " + toLoc.label;
   const avoid = document.getElementById("avoidToll").checked;
-  const base = "https://router.project-osrm.org/route/v1/driving/" + fromLoc.lon + "," + fromLoc.lat + ";" + toLoc.lon + "," + toLoc.lat;
-  const qs = "?alternatives=true&steps=true&overview=full&geometries=geojson";
+  const pts = tripPoints();
+  const base = "https://router.project-osrm.org/route/v1/driving/" + pts.map(p => p.lon + "," + p.lat).join(";");
+  // alternatif rota yalnızca iki noktalı sorgularda anlamlı; durak varken tek rota isteriz
+  const qs = "?alternatives=" + (pts.length > 2 ? "false" : "3") + "&steps=true&overview=full&geometries=geojson";
   tripRoutes = [];
   for (const ex of (avoid ? ["&exclude=toll", "&exclude=motorway", ""] : [""])){
     try {
@@ -3416,8 +3498,24 @@ async function computeTrip(){
       if (j.routes && j.routes.length){ tripRoutes = j.routes.slice(0, 3); break; }
     } catch(e){}
   }
+  // OSRM tek rota döndürdüyse: otoyolu/ücretli yolu dışlayan ikinci bir rota iste — gerçekten farklıysa alternatif olarak ekle
+  if (tripRoutes.length === 1 && !avoid && pts.length === 2){
+    for (const ex of ["&exclude=motorway", "&exclude=toll"]){
+      try {
+        const r2 = await fetchT(base + qs + ex, 12000);
+        const j2 = await r2.json();
+        const cand = j2.routes && j2.routes[0];
+        if (cand && Math.abs(cand.distance - tripRoutes[0].distance) / tripRoutes[0].distance > 0.02){
+          cand.altLabel = "otoyolsuz";
+          tripRoutes.push(cand);
+          break;
+        }
+      } catch(e){}
+    }
+  }
   if (!tripRoutes.length){
-    const air = haversine(fromLoc, toLoc) * 1.25;
+    let air = 0;
+    for (let i = 0; i < pts.length - 1; i++) air += haversine(pts[i], pts[i+1]) * 1.25;
     tripRoutes = [{ distance: air * 1000, duration: (air / 70) * 3600, geometry: null, approx: true }];
   }
   selRoute = 0;
@@ -3500,20 +3598,99 @@ function fmtDur(sec){
   const m = Math.round(sec / 60);
   return m >= 60 ? Math.floor(m / 60) + " sa " + (m % 60) + " dk" : m + " dk";
 }
+/* ---------- YOL TİPİ DÖKÜMÜ ----------
+   Rota servisinde "şu yol 2×2 şeritli" diye bir alan yok. Elimizde yolun numarası ve adı var;
+   Türkiye'de bu numaralandırma yol sınıfını büyük ölçüde belli eder (O-xx otoyol, D-xxx devlet yolu,
+   iki haneli çift numara il yolu). Şerit bilgisini o sınıfın TİPİK değeri olarak yazıyoruz — ölçülmüş
+   değil, bu yüzden ekranda "tipik" ibaresi geçiyor. */
+const ROAD_KINDS = [
+  { key:"otoyol", label:"Otoyol", lanes:"2×2 / 2×3 şerit · bölünmüş · kontrollü giriş-çıkış", color:"#7b2ff2", icon:"🛣", dash:"",
+    test: s => /\bO[-\s]?\d+\b/i.test(s.ref || "") || /otoyol/i.test(s.name || "") },
+  { key:"duble", label:"Bölünmüş devlet yolu", lanes:"tipik 2×2 şerit · refüjlü", color:"#2a78d6", icon:"🛤", dash:"20 9",
+    test: s => /\b[DE][-\s]?\d{2,3}\b/i.test(s.ref || "") || /çevre\s*yolu|devlet\s*yolu/i.test(s.name || "") },
+  { key:"tek", label:"İl yolu", lanes:"tipik 1+1 şerit · karşılıklı trafik", color:"#e08a1f", icon:"↔", dash:"7 8",
+    test: s => /\b\d{2}[-\s]?\d{2}\b/.test(s.ref || "") },
+  { key:"sehir", label:"Şehir içi / bağlantı", lanes:"cadde, bulvar, kavşak kolları", color:"#8a8f99", icon:"🏙", dash:"2 8",
+    test: () => true }
+];
+function roadKindBreakdown(route){
+  const acc = {}; let total = 0;
+  (route.legs || []).forEach(l => (l.steps || []).forEach(s => {
+    const d = (s.distance || 0) / 1000;
+    if (!d) return;
+    const k = ROAD_KINDS.find(x => x.test(s)) || ROAD_KINDS[ROAD_KINDS.length - 1];
+    acc[k.key] = (acc[k.key] || 0) + d;
+    total += d;
+  }));
+  if (total < 1) return null;                                   // adım verisi yoksa hiç gösterme
+  const list = ROAD_KINDS.filter(k => (acc[k.key] || 0) >= 0.5)
+    .map(k => ({ ...k, km: acc[k.key] })).sort((a,b) => b.km - a.km);
+  return list.length ? { total, list } : null;
+}
+const ROUTE_COLORS = ["#ff7a1a", "#2a78d6", "#7b2ff2", "#0f9b8e"];
+/* Lejantta yol tipini gösteren örnek çizgi — haritadaki desenle BİREBİR aynı olmalı */
+function dashSample(kind, col, w){
+  w = w || 34;
+  return '<svg width="' + w + '" height="8" style="flex:none"><line x1="1" y1="4" x2="' + (w-1) + '" y2="4" ' +
+    'stroke="' + (col || kind.color) + '" stroke-width="4" stroke-linecap="butt"' +
+    (kind.dash ? ' stroke-dasharray="' + kind.dash.split(" ").map(n => Math.max(2, Math.round(+n/2.2))).join(" ") + '"' : '') +
+    ' /></svg>';
+}
+/* Haritada her rotanın üstüne "ROTA 2" rozeti — alternatifler gri çizgi yığını olmaktan çıksın */
+function routeBadge(rt, i, sel){
+  const c = rt.geometry && rt.geometry.coordinates;
+  if (!c || c.length < 2) return;
+  const frac = [0.50, 0.26, 0.74, 0.88][i] ?? 0.5;              // rozetler üst üste binmesin
+  const p = c[Math.floor((c.length - 1) * frac)];
+  const col = sel ? "#ff7a1a" : ROUTE_COLORS[i % ROUTE_COLORS.length];
+  const html = '<div style="transform:translate(-50%,-50%);background:' + col + ';color:#fff;font-weight:800;' +
+    'font-size:12px;letter-spacing:.3px;padding:4px 10px;border-radius:999px;white-space:nowrap;cursor:pointer;' +
+    'box-shadow:0 2px 7px rgba(0,0,0,.4);border:2px solid #fff">ROTA ' + (i+1) +
+    (sel ? ' ✓' : ' · ' + (rt.distance/1000).toFixed(0) + ' km') + '</div>';
+  L.marker([p[1], p[0]], { icon: L.divIcon({ className:"", html, iconSize:[0,0] }), zIndexOffset: 900 })
+    .addTo(tripLayer).on("click", () => { selRoute = i; renderTripRoutes(); });
+}
+
 function renderTripRoutes(){
   const sum = document.getElementById("tripSummary");
   const route = tripRoutes[selRoute];
   const km = route.distance / 1000;
   const tolls = route.geometry ? tollsOf(route) : [];
-  sum.innerHTML = "<b>" + fromLoc.label + " → " + toLoc.label + "</b>" +
-    (route.approx ? ' · <span style="color:var(--warn)">rota servisi yanıt vermedi — kuş uçuşu tahmini</span>' : "");
+  const stopLocs = stops.map(x => x.loc).filter(Boolean);
+  sum.innerHTML = "<b>" + [fromLoc.label, ...stopLocs.map(x => x.label), toLoc.label].join(" → ") + "</b>" +
+    (stopLocs.length ? ' <span class="gi-sub">· ' + stopLocs.length + ' ara durak</span>' : "") +
+    (route.approx ? ' · <span style="color:var(--warn)">rota servisi yanıt vermedi — kuş uçuşu tahmini</span>' : "") +
+    ((route.legs || []).length > 1
+      ? '<div style="margin-top:5px;font-size:12.5px">' + route.legs.map((lg, li) =>
+          '<span style="display:inline-block;border:1px solid var(--border);border-radius:999px;padding:2px 9px;margin:2px 5px 0 0">' +
+          (li+1) + '. bölüm <b>' + (lg.distance/1000).toLocaleString("tr-TR",{maximumFractionDigits:0}) + ' km</b> · ' +
+          fmtDur(lg.duration) + '</span>').join("") + '</div>'
+      : "");
   // rota seçim çipleri
-  document.getElementById("routeChips").innerHTML = tripRoutes.length > 1 ? tripRoutes.map((rt, i) => {
-    const tl = rt.geometry ? tollsOf(rt) : [];
-    return '<span class="favchip'+(i === selRoute ? ' armed' : '')+'" data-rt="'+i+'" style="'+(i === selRoute ? 'background:linear-gradient(90deg,#ff9500,#ff5e3a);color:#fff;border-color:transparent' : '')+'">' +
-      "Rota " + (i+1) + " · " + (rt.distance/1000).toLocaleString("tr-TR",{maximumFractionDigits:0}) + " km · " + fmtDur(rt.duration) +
-      (tl.length ? " · 🛣 ücretli" : "") + "</span>";
-  }).join("") : "";
+  document.getElementById("routeChips").innerHTML = tripRoutes.length > 1
+    ? '<div style="font-size:12.5px;font-weight:700;color:var(--text-secondary);margin:2px 0 6px">' +
+        tripRoutes.length + ' alternatif rota bulundu — birini seç:</div>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:4px">' +
+      tripRoutes.map((rt, i) => {
+        const on  = i === selRoute;
+        const col = on ? "#ff7a1a" : ROUTE_COLORS[i % ROUTE_COLORS.length];
+        const tc  = rt.geometry ? tollCostOf(rt) : { total: 0 };
+        const rk  = roadKindBreakdown(rt);
+        const top = rk ? rk.list[0] : null;
+        return '<div data-rt="' + i + '" style="cursor:pointer;flex:1 1 210px;min-width:200px;border:2px solid ' + col +
+          ';border-radius:14px;padding:9px 12px;background:' + (on ? col : "var(--surface-1)") +
+          ';color:' + (on ? "#fff" : "var(--text-primary)") + ';box-shadow:' + (on ? "0 3px 12px rgba(255,122,26,.35)" : "none") + '">' +
+          '<div style="display:flex;align-items:center;gap:7px;font-weight:800;font-size:14.5px">' +
+            '<span style="background:' + (on ? "rgba(255,255,255,.25)" : col) + ';color:#fff;border-radius:999px;' +
+            'padding:1px 9px;font-size:12px">ROTA ' + (i+1) + '</span>' + (on ? "✓ seçili" : "") + '</div>' +
+          '<div style="font-size:17px;font-weight:800;margin-top:3px">' +
+            (rt.distance/1000).toLocaleString("tr-TR",{maximumFractionDigits:0}) + ' km' +
+            '<span style="font-size:13px;font-weight:600;opacity:.85"> · ' + fmtDur(rt.duration) + '</span></div>' +
+          '<div style="font-size:12px;margin-top:3px;opacity:.9">' +
+            (tc.total > 0 ? '🛣 HGS ≈ <b>' + tc.total.toLocaleString("tr-TR") + ' TL</b>' : '✅ HGS yok') +
+            (top ? ' · ' + top.icon + ' ağırlıklı ' + top.label.toLocaleLowerCase("tr") : '') + '</div></div>';
+      }).join("") + '</div>'
+    : "";
   document.querySelectorAll("#routeChips [data-rt]").forEach(el => el.addEventListener("click", () => {
     selRoute = +el.dataset.rt; renderTripRoutes();
   }));
@@ -3554,31 +3731,61 @@ function renderTripRoutes(){
     tripLayer.clearLayers();
     L.marker([fromLoc.lat, fromLoc.lon]).addTo(tripLayer).bindPopup("Başlangıç: " + fromLoc.label);
     L.marker([toLoc.lat, toLoc.lon]).addTo(tripLayer).bindPopup("Varış: " + toLoc.label);
+    // ara duraklar: numaralı mavi madalyon
+    stops.map(x => x.loc).filter(Boolean).forEach((sl, si) => {
+      const html = '<div style="transform:translate(-50%,-50%);width:26px;height:26px;border-radius:50%;background:#2a78d6;' +
+        'color:#fff;font-weight:800;font-size:13px;display:flex;align-items:center;justify-content:center;' +
+        'border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.4)">' + (si+1) + '</div>';
+      L.marker([sl.lat, sl.lon], { icon: L.divIcon({ className:"", html, iconSize:[0,0] }), zIndexOffset: 800 })
+        .addTo(tripLayer).bindPopup("Durak " + (si+1) + ": " + sl.label);
+    });
     let selLine = null;
-    tripRoutes.forEach((rt, i) => {
-      if (!rt.geometry) return;
+    // ÖNCE alternatifler, SONRA seçili rota, EN SON rozetler → seçili hat alternatiflerin altında kalmasın
+    const drawOrder = tripRoutes.map((_, i) => i).filter(i => i !== selRoute).concat([selRoute]);
+    drawOrder.forEach(i => {
+      const rt = tripRoutes[i];
+      if (!rt || !rt.geometry) return;
       if (i === selRoute){
-        // SEÇİLİ ROTA: ücretsiz bölümler YEŞİL, ücretli bölümler KIRMIZI
+        /* SEÇİLİ ROTA — hat üzerinde iki bilgi birden:
+           RENK  = ücretli (kırmızı) / ücretsiz (yeşil)
+           ÇİZGİ = yol tipi (otoyol düz, devlet yolu uzun kesik, il yolu kısa kesik, şehir içi noktalı) */
         const line = L.geoJSON(rt.geometry, { style: { color: "#2e9e4f", weight: 5, opacity: 0.9 } }).addTo(tripLayer);
         selLine = line;
-        line.bindTooltip("Rota " + (i+1) + " · ücretsiz bölüm · " + (rt.distance/1000).toFixed(0) + " km");
-        let hasStepGeom = false;
-        (rt.legs || []).forEach(l => (l.steps || []).forEach(s => {
-          if (s.geometry) hasStepGeom = true;
-          if (s.geometry && isTollStep(s)){
-            L.geoJSON(s.geometry, { style: { color: "#e02020", weight: 6, opacity: 0.95 } })
-              .addTo(tripLayer).bindTooltip("🛣 ÜCRETLİ (HGS): " + ((s.ref || s.name || "otoyol")));
-          }
-        }));
-        if (!hasStepGeom && tollsOf(rt).length)
+        line.bindTooltip("Rota " + (i+1) + " · " + (rt.distance/1000).toFixed(0) + " km");
+        const steps = (rt.legs || []).flatMap(l => l.steps || []).filter(s => s.geometry);
+        if (steps.length){
+          steps.forEach(s => {
+            const kind = ROAD_KINDS.find(k => k.test(s)) || ROAD_KINDS[ROAD_KINDS.length - 1];
+            const toll = isTollStep(s);
+            // alt katman: kalın beyaz zemin — kesikli desen haritada net okunsun
+            L.geoJSON(s.geometry, { style: { color: "#ffffff", weight: toll ? 10 : 9, opacity: 0.55 } }).addTo(tripLayer);
+            L.geoJSON(s.geometry, { style: { color: toll ? "#e02020" : "#2e9e4f", weight: toll ? 6 : 5,
+                                             opacity: 0.97, dashArray: kind.dash || null, lineCap: "butt" } })
+              .addTo(tripLayer)
+              .bindTooltip((toll ? "🛣 ÜCRETLİ (HGS) · " : "🟢 ücretsiz · ") + kind.icon + " " + kind.label +
+                           (s.ref || s.name ? " · " + (s.ref || s.name) : "") + "<br><span style='color:#555'>" + kind.lanes + "</span>");
+          });
+        } else if (tollsOf(rt).length){
           line.bindTooltip("Rota " + (i+1) + " · ücretli bölüm içeriyor (ayrıntı için gişe listesine bakın)");
+        }
       } else {
-        const line = L.geoJSON(rt.geometry, { style: { color: "#8a8f99", weight: 4, opacity: 0.6, dashArray: "7 7" } }).addTo(tripLayer);
+        // ALTERNATİF ROTA: gri değil, kendi rengiyle — hangi çizginin hangi rota olduğu anlaşılsın
+        const col = ROUTE_COLORS[i % ROUTE_COLORS.length];
+        const line = L.geoJSON(rt.geometry, { style: { color: col, weight: 5, opacity: 0.75, dashArray: "10 8" } }).addTo(tripLayer);
         line.on("click", () => { selRoute = i; renderTripRoutes(); });
-        line.bindTooltip("Rota " + (i+1) + " · " + (rt.distance/1000).toFixed(0) + " km · " + fmtDur(rt.duration));
+        line.bindTooltip("Rota " + (i+1) + " · " + (rt.distance/1000).toFixed(0) + " km · " + fmtDur(rt.duration) + " — seçmek için tıkla");
       }
     });
-    if (selLine) tripMapObj.fitBounds(selLine.getBounds(), { padding: [30,30] });
+    tripRoutes.forEach((rt, i) => { if (rt && rt.geometry) routeBadge(rt, i, i === selRoute); });
+    // Tüm rotalar ekrana sığsın — alternatif rota seçili rotanın dışında kalıp görünmez olmasın
+    let allB = null;
+    tripRoutes.forEach(rt => {
+      if (!rt || !rt.geometry) return;
+      const b = L.geoJSON(rt.geometry).getBounds();
+      allB = allB ? allB.extend(b) : b;
+    });
+    if (allB) tripMapObj.fitBounds(allB, { padding: [34,34] });
+    else if (selLine) tripMapObj.fitBounds(selLine.getBounds(), { padding: [30,30] });
     else tripMapObj.fitBounds([[fromLoc.lat, fromLoc.lon],[toLoc.lat, toLoc.lon]], { padding: [30,30] });
     gateSummary = null;
     lastGateRows = [];
@@ -3614,6 +3821,23 @@ function renderTripRoutes(){
                 bd.list.map(p => '<b>' + p.name + '</b> ' + Math.round(p.km) + ' km ≈ ' + p.fee.toLocaleString("tr-TR") + ' TL').join(" · ") + '</div>'
               : '')
           : "") +
+        (function(){
+          const rk = roadKindBreakdown(route);
+          if (!rk) return "";
+          return '<div style="margin-top:10px;padding-top:9px;border-top:1px dashed var(--border)">' +
+            '<div style="font-size:13px;font-weight:800;margin-bottom:6px">🚦 Yol tipi — bu rota nasıl bir yolda geçiyor?</div>' +
+            '<div style="display:flex;height:12px;border-radius:6px;overflow:hidden;margin-bottom:7px;border:1px solid var(--border)">' +
+            rk.list.map(k => '<div title="' + k.label + '" style="width:' + (k.km / rk.total * 100).toFixed(1) +
+              '%;background:' + k.color + '"></div>').join("") + '</div>' +
+            rk.list.map(k =>
+              '<div style="display:flex;align-items:center;gap:8px;font-size:12.5px;margin-bottom:3px;white-space:normal">' +
+              dashSample(k, "#444") +
+              '<span><b>' + k.icon + ' ' + k.label + '</b> ' + Math.round(k.km) + ' km (%' + Math.round(k.km / rk.total * 100) + ')' +
+              ' <span style="color:var(--text-muted)">— ' + k.lanes + '</span></span></div>').join("") +
+            '<div class="hint" style="margin-top:5px">Haritada <b>renk</b> ücretli/ücretsiz, <b>çizgi deseni</b> yol tipini gösterir. ' +
+            'Şerit sayıları yol sınıfının tipik değeridir, ölçüm değildir; sınıflandırma yol numarasından yapılır ' +
+            '(O-xx otoyol, D-xxx devlet yolu).</div></div>';
+        })() +
         '</div>';
     }
   } else {
