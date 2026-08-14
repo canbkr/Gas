@@ -182,6 +182,18 @@
     vertical-align: -2px; margin-right: 8px; animation: rot .8s linear infinite;
   }
   @keyframes rot { to { transform: rotate(360deg); } }
+  /* hava durumu animasyonları */
+  @keyframes wxspin { to { transform: rotate(360deg); } }
+  @keyframes wxpulse { 0%,100%{ transform: scale(1); } 50%{ transform: scale(1.08); } }
+  @keyframes wxdrift { 0%,100%{ transform: translateX(-0.8px); } 50%{ transform: translateX(1.4px); } }
+  @keyframes wxdrop { 0%{ transform: translateY(-1px); opacity:0 } 18%{ opacity:1 }
+                      100%{ transform: translateY(10px); opacity:0 } }
+  @keyframes wxsnow { 0%{ transform: translateY(-1px) rotate(0deg); opacity:0 } 18%{ opacity:1 }
+                      100%{ transform: translateY(10px) rotate(200deg); opacity:0 } }
+  @keyframes wxflash { 0%,70%,100%{ opacity:.2 } 74%,80%{ opacity:1 } 77%{ opacity:.35 } }
+  @keyframes wxfog { 0%,100%{ transform: translateX(-2px); opacity:.5 } 50%{ transform: translateX(2px); opacity:1 } }
+  .wx svg { display:block }
+  @media (prefers-reduced-motion: reduce){ .wx * { animation: none !important } }
 
   .sub { color: var(--text-secondary); font-size: 13px; margin: 0 0 14px; }
   .sub a { color: var(--accent); text-decoration: none; }
@@ -796,7 +808,7 @@
     BP, Türkiye'deki dağıtıcı fiyat listelerinde ayrı yayınlanmadığı için kaynakta yer almıyor.
     İstasyon konumları OpenStreetMap'ten, sürüş mesafeleri OSRM'den alınır; yol tarifi Google Maps'te açılır.
     Araç varsayılanları Ford Courier içindir, tüketim değerini kendi aracınıza göre değiştirebilirsiniz.
-    <b>Sürüm: v125</b> ·
+    <b>Sürüm: v129</b> ·
     Diğer kaynaklar: <a href="https://www.petrolofisi.com.tr/akaryakit-fiyatlari/mersin-akaryakit-fiyatlari" target="_blank" rel="noopener">Petrol Ofisi</a> ·
     <a href="https://www.opet.com.tr/akaryakit-fiyatlari/mersin" target="_blank" rel="noopener">Opet</a> ·
     <a href="https://www.aytemiz.com.tr/akaryakit-fiyatlari/benzin-fiyatlari/mersin-benzin-fiyati" target="_blank" rel="noopener">Aytemiz</a> ·
@@ -3633,7 +3645,166 @@ function fmtDur(sec){
    o bölümün en ucuz benzincisi kim? Hepsi tek bakışta görünsün diye yatay şerit.
    Araç figürü GPS'e göre şerit üzerinde canlı ilerler. */
 let tripCurrentRoute = null, tripWatchId = null, tripCarKm = null, tripCarOff = null, carLayer = null;
-let lastSegWinners = null;
+let lastSegWinners = null, lastStationPool = null;
+
+/* Rotanın hangi il sınırları içinden geçtiği: her ~4 km'de bir örnek alıp en yakın il merkezine
+   bakıyoruz (Voronoi yaklaşımı). Gerçek il sınırı verisi uygulamada yok — bu yüzden bu bir
+   YAKLAŞIKTIR, ekranda da öyle yazıyor. Kısa "sıyırma" geçişleri gürültü yapmasın diye eleniyor. */
+function cityRuns(route){
+  const c = route.geometry && route.geometry.coordinates;
+  if (!c || c.length < 2) return [];
+  const runs = [];
+  let acc = 0, lastSample = -1;
+  for (let i = 0; i < c.length; i++){
+    if (i > 0) acc += haversine({ lat: c[i-1][1], lon: c[i-1][0] }, { lat: c[i][1], lon: c[i][0] });
+    if (lastSample >= 0 && acc - lastSample < 4 && i < c.length - 1) continue;
+    lastSample = acc;
+    let best = null, bd = 1e9;
+    for (const ct of CITIES){
+      const d = haversine({ lat: c[i][1], lon: c[i][0] }, { lat: ct.lat, lon: ct.lon });
+      if (d < bd){ bd = d; best = ct; }
+    }
+    if (!best) continue;
+    const last = runs[runs.length - 1];
+    if (last && last.city.slug === best.slug) last.to = acc;
+    else runs.push({ city: best, from: acc, to: acc });
+  }
+  if (!runs.length) return [];
+  runs[runs.length - 1].to = acc;
+  // 18 km'den kısa geçişleri komşusuna kat (yol ilin ucundan sıyırıp geçmiş olabilir)
+  const out = [];
+  for (const r of runs){
+    const len = r.to - r.from;
+    const prev = out[out.length - 1];
+    if (len < 18 && prev){ prev.to = r.to; continue; }
+    if (prev && prev.city.slug === r.city.slug){ prev.to = r.to; continue; }
+    out.push({ city: r.city, from: r.from, to: r.to });
+  }
+  return out;
+}
+
+/* Yol tipi koşuları: hangi km aralığı otoyol, hangisi devlet yolu, hangisi tek şerit.
+   Şeridin üzerine gerçek şerit çizgilerini bu bilgiye göre çiziyoruz. */
+/* ---------- ROTA BOYUNCA HAVA DURUMU ----------
+   Kaynak: Open-Meteo (ücretsiz, anahtar istemiyor). Rota üzerinden 4-9 nokta örnekleyip
+   tek istekte hepsinin anlık havasını alıyoruz; şeritte o km'lerin üstüne sembol koyuyoruz. */
+const WMO = [
+  [[0], "☀️", "açık"], [[1], "🌤", "az bulutlu"], [[2], "⛅", "parçalı bulutlu"], [[3], "☁️", "kapalı"],
+  [[45,48], "🌫", "sisli"], [[51,53,55,56,57], "🌦", "çiseli"],
+  [[61,63,65,66,67,80,81,82], "🌧", "yağmurlu"],
+  [[71,73,75,77,85,86], "❄️", "karlı"], [[95,96,99], "⛈", "gök gürültülü"]
+];
+function wmoIcon(code){
+  for (const [codes, icon, label] of WMO) if (codes.indexOf(code) >= 0) return { icon, label };
+  return { icon: "•", label: "bilinmiyor" };
+}
+/* Emoji yerine çizilmiş, hareketli hava simgeleri — her tarayıcıda aynı görünsün ve canlı dursun */
+function wxSvg(code){
+  const S = '<svg class="wxi" viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">';
+  const sun = (cx, cy, r, rays) =>
+    (rays ? '<g style="transform-origin:' + cx + 'px ' + cy + 'px;animation:wxspin 9s linear infinite">' +
+      [0,45,90,135,180,225,270,315].map(a =>
+        '<rect x="' + (cx-0.9) + '" y="' + (cy-r-4.6) + '" width="1.8" height="3.2" rx="0.9" fill="#f6a609" ' +
+        'transform="rotate(' + a + ' ' + cx + ' ' + cy + ')"/>').join("") + '</g>' : '') +
+    '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="#fbbf24" stroke="#f59e0b" stroke-width="0.8" ' +
+    'style="transform-origin:' + cx + 'px ' + cy + 'px;animation:wxpulse 3.4s ease-in-out infinite"/>';
+  const cloud = (dy, col, col2) =>
+    '<g style="animation:wxdrift 4.5s ease-in-out infinite" transform="translate(0,' + (dy||0) + ')">' +
+    '<path d="M9 21h14a4.6 4.6 0 0 0 .5-9.2A6.4 6.4 0 0 0 11.2 10 5.2 5.2 0 0 0 9 21z" fill="' + (col||"#cfd8e3") + '"/>' +
+    '<path d="M9 21h14a4.6 4.6 0 0 0 .5-9.2 6.4 6.4 0 0 0-2.2-1.5c1 1.2 1.6 2.7 1.6 4.4 0 3.4-2.5 6.3-5.9 6.3H9z" ' +
+    'fill="' + (col2||"#aebbcb") + '"/></g>';
+  const drops = (col, n) => Array.from({length: n || 3}, (_, i) =>
+    '<rect x="' + (11 + i*5) + '" y="21" width="1.7" height="4.4" rx="0.85" fill="' + (col||"#3b8ee0") + '" ' +
+    'style="animation:wxdrop 1.1s linear infinite;animation-delay:' + (i*0.28).toFixed(2) + 's"/>').join("");
+  const flakes = n => Array.from({length: n || 3}, (_, i) =>
+    '<g style="animation:wxsnow 1.9s linear infinite;animation-delay:' + (i*0.5).toFixed(2) + 's" ' +
+    'transform="translate(' + (11.8 + i*5) + ',22)"><g stroke="#8fd3ff" stroke-width="1.1" stroke-linecap="round">' +
+    '<path d="M0 -2.2V2.2M-1.9 -1.1L1.9 1.1M-1.9 1.1L1.9 -1.1"/></g></g>').join("");
+  if (code === 0) return S + sun(16, 15, 6.6, true) + '</svg>';
+  if (code === 1) return S + sun(11.5, 12, 5.2, true) + cloud(3) + '</svg>';
+  if (code === 2) return S + sun(11, 11.5, 4.8, false) + cloud(3) + '</svg>';
+  if (code === 3) return S + cloud(2, "#c2ccd8", "#9dabbb") + '</svg>';
+  if (code === 45 || code === 48)
+    return S + cloud(-1) + [0,1,2].map(i =>
+      '<rect x="6" y="' + (22 + i*3) + '" width="20" height="1.8" rx="0.9" fill="#b6c2d0" ' +
+      'style="animation:wxfog 3.2s ease-in-out infinite;animation-delay:' + (i*0.4) + 's"/>').join("") + '</svg>';
+  if ([51,53,55,56,57].indexOf(code) >= 0) return S + cloud(-1) + drops("#69a9e8", 2) + '</svg>';
+  if ([61,63,65,66,67,80,81,82].indexOf(code) >= 0) return S + cloud(-1) + drops("#2f7fd6", 3) + '</svg>';
+  if ([71,73,75,77,85,86].indexOf(code) >= 0) return S + cloud(-1, "#dbe4ee", "#b9c6d6") + flakes(3) + '</svg>';
+  if ([95,96,99].indexOf(code) >= 0)
+    return S + cloud(-1, "#9aa7b6", "#7b8898") +
+      '<path d="M17 20l-5 7h3.6l-1.6 5 6-8h-3.8l2.2-4z" fill="#ffd84d" stroke="#f0a500" stroke-width="0.6" ' +
+      'style="animation:wxflash 2.6s ease-in-out infinite"/></svg>';
+  return S + cloud(2) + '</svg>';
+}
+let lastWeather = null, weatherSeq = 0;
+async function loadRouteWeather(route){
+  const my = ++weatherSeq;
+  const c = route && route.geometry && route.geometry.coordinates;
+  if (!c || c.length < 2) return;
+  const total = route.distance / 1000;
+  const N = Math.max(3, Math.min(9, Math.round(total / 140)));
+  const picks = [];
+  let acc = 0, next = 0, idx = 0;
+  for (let i = 0; i < c.length && picks.length < N; i++){
+    if (i > 0) acc += haversine({ lat: c[i-1][1], lon: c[i-1][0] }, { lat: c[i][1], lon: c[i][0] });
+    if (acc >= next){ picks.push({ lat: c[i][1], lon: c[i][0], km: acc }); next += total / (N - 1 || 1); }
+  }
+  if (picks.length < 2) picks.push({ lat: c[c.length-1][1], lon: c[c.length-1][0], km: total });
+  const url = "https://api.open-meteo.com/v1/forecast?latitude=" + picks.map(p => p.lat.toFixed(3)).join(",") +
+    "&longitude=" + picks.map(p => p.lon.toFixed(3)).join(",") +
+    "&current=weather_code,temperature_2m&timezone=auto";
+  try {
+    const r = await fetchT(url, 9000);
+    const j = await r.json();
+    const arr = Array.isArray(j) ? j : [j];
+    if (my !== weatherSeq) return;
+    lastWeather = arr.map((x, i) => ({
+      km: picks[i] ? picks[i].km : 0,
+      code: x && x.current ? x.current.weather_code : null,
+      temp: x && x.current ? x.current.temperature_2m : null
+    })).filter(w => w.code != null);
+    renderRouteTimeline();
+  } catch(e){}
+}
+
+function roadKindRuns(route){
+  const out = [];
+  let acc = 0;
+  (route.legs || []).forEach(l => (l.steps || []).forEach(st => {
+    const d = (st.distance || 0) / 1000;
+    if (!d) return;
+    const k = ROAD_KINDS.find(x => x.test(st)) || ROAD_KINDS[ROAD_KINDS.length - 1];
+    const last = out[out.length - 1];
+    if (last && last.key === k.key) last.to = acc + d;
+    else out.push({ key: k.key, label: k.label, lanes: k.lanes, from: acc, to: acc + d });
+    acc += d;
+  }));
+  return out;
+}
+/* Tek bir yol dilimi: 3B görünümlü asfalt + tipine uygun şerit çizgileri */
+function roadSlice(kind, leftPct, widthPct){
+  const dash = (topPct, style) =>
+    '<div style="position:absolute;left:0;right:0;top:' + topPct + '%;height:2px;' +
+    (style === "solid" ? 'background:#f3f4f6;opacity:.85'
+     : style === "dot" ? 'background:repeating-linear-gradient(90deg,#f3f4f6 0 5px,transparent 5px 16px);opacity:.7'
+     : 'background:repeating-linear-gradient(90deg,#f3f4f6 0 18px,transparent 18px 40px);opacity:.8') + '"></div>';
+  let lines = "", median = "";
+  if (kind === "otoyol"){
+    lines = dash(23) + dash(77);
+    median = '<div style="position:absolute;left:0;right:0;top:44%;height:12%;background:#7c8794;' +
+             'box-shadow:inset 0 1px 0 rgba(255,255,255,.25)"></div>';
+  } else if (kind === "duble"){
+    lines = dash(24) + dash(76);
+    median = '<div style="position:absolute;left:0;right:0;top:46%;height:8%;background:#7c8794"></div>';
+  } else if (kind === "tek"){
+    lines = dash(50, "solid");
+  } else {
+    lines = dash(50, "dot");
+  }
+  return '<div style="position:absolute;left:' + leftPct + '%;width:' + widthPct + '%;top:0;bottom:0;overflow:hidden;' +
+    'background:linear-gradient(180deg,#5b6672 0%,#454f5b 38%,#2f3842 78%,#222932 100%)">' + median + lines + '</div>';
+}
 
 function renderRouteTimeline(route){
   const el = document.getElementById("routeTimeline");
@@ -3644,53 +3815,106 @@ function renderRouteTimeline(route){
   const total = route.distance / 1000;
   if (!(total > 0)){ el.style.display = "none"; return; }
   const stopLocs = stops.map(x => x.loc).filter(Boolean);
-  const names = [fromLoc.label, ...stopLocs.map(x => x.label), toLoc.label];
   const legs = (route.legs || []).filter(l => l.distance);
-  const bounds = [0];
-  if (legs.length === names.length - 1){ let a = 0; legs.forEach(l => { a += l.distance / 1000; bounds.push(a); }); }
-  else { bounds.length = 1; bounds.push(total); }
+  const stopKm = [];                                   // durakların rota üzerindeki km'si
+  { let a = 0; legs.forEach(l => { a += l.distance / 1000; stopKm.push(a); }); stopKm.pop(); }
   const tsegs = tollSegmentsOf(route);
   const pct = km => Math.max(0, Math.min(100, km / total * 100));
-  const shortName = n => { const t = String(n || "").split(",")[0].trim(); return t.length > 18 ? t.slice(0, 17) + "…" : t; };
-
-  // düğümler (A, duraklar, B)
-  const nodes = names.map((n, i) => {
-    const p = pct(bounds[Math.min(i, bounds.length - 1)]);
-    const glyph = i === 0 ? "A" : i === names.length - 1 ? "B" : String(i);
-    const align = i === 0 ? "translateX(0)" : i === names.length - 1 ? "translateX(-100%)" : "translateX(-50%)";
-    return '<div style="position:absolute;left:' + p + '%;top:0;bottom:0;transform:' + align + ';display:flex;' +
-      'flex-direction:column;align-items:' + (i === 0 ? "flex-start" : i === names.length-1 ? "flex-end" : "center") + ';">' +
-      '<div style="font-size:12px;font-weight:800;white-space:nowrap;color:#1b2430">' + shortName(n) + '</div>' +
-      '<div style="flex:1;width:2px;background:#2b3440;margin:3px 0"></div>' +
-      '<div style="width:20px;height:20px;border-radius:50%;background:#2b3440;color:#fff;font-size:11px;font-weight:800;' +
-      'display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35)">' + glyph + '</div>' +
-      '</div>';
-  }).join("");
-
-  // bölümler: üstte HGS, altta km + en ucuz benzinci
-  const segsHtml = [];
-  for (let i = 0; i < bounds.length - 1; i++){
-    const a = bounds[i], b = bounds[i+1];
-    const w = (b - a) / total * 100;
-    const fee = Math.round(feeBetween(tsegs, a, b) || 0);
-    const win = (lastSegWinners || []).find(x => x.x && x.from <= a + 1 && x.to >= b - 1)
-             || (lastSegWinners || []).find(x => x.x && x.x.s.km >= a && x.x.s.km <= b);
-    segsHtml.push('<div style="position:absolute;left:' + pct(a) + '%;width:' + w + '%;top:0;bottom:0;' +
-      'display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:0 4px;overflow:hidden">' +
-      '<div style="font-size:11.5px;font-weight:800;white-space:nowrap;color:' + (fee > 0 ? "#c0392b" : "#0f9d58") + '">' +
-        (fee > 0 ? "🛣 " + fee.toLocaleString("tr-TR") + " TL" : "HGS yok") + '</div>' +
-      '<div style="text-align:center;line-height:1.3">' +
-        '<div style="font-size:12.5px;font-weight:800;color:#1b2430">' + Math.round(b - a).toLocaleString("tr-TR") + ' km</div>' +
-        '<div style="font-size:11px;white-space:nowrap;color:#5b6672">' +
-          (win && win.x ? '⛽ ' + (win.x.s.brand || "İstasyon") + ' ' + fmt(win.x.price) + ' TL'
-             : '<span style="opacity:.6">' + (lastSegWinners ? "uygun istasyon yok" : "istasyon aranıyor…") + '</span>') + '</div>' +
-      '</div></div>');
+  const runs = cityRuns(route);
+  const kindRuns = roadKindRuns(route);
+  const useCity = runs.length > 1;
+  // bölümler: il geçişlerine göre (yoksa duraklara göre)
+  let parts;
+  if (useCity) parts = runs.map(r => ({ from: r.from, to: r.to, label: r.city.name }));
+  else {
+    const b = [0]; let a = 0;
+    legs.forEach(l => { a += l.distance / 1000; b.push(a); });
+    if (b.length < 2) b.push(total);
+    parts = [];
+    for (let i = 0; i < b.length - 1; i++) parts.push({ from: b[i], to: b[i+1], label: "" });
   }
 
-  const car = tripCarKm != null
-    ? '<div title="Konumunuz" style="position:absolute;left:' + pct(tripCarKm) + '%;top:50%;transform:translate(-50%,-50%);' +
-      'z-index:5;font-size:19px;line-height:1;filter:drop-shadow(0 1px 3px rgba(0,0,0,.5))">🚗</div>'
-    : "";
+  // il adları + sınır çizgileri
+  const nodes = parts.map((pt, i) =>
+    '<div style="position:absolute;left:' + pct(pt.from) + '%;top:0;bottom:0;width:2px;background:#c3ccd7"></div>').join("") +
+    '<div style="position:absolute;left:100%;top:0;bottom:0;width:2px;background:#c3ccd7"></div>';
+
+  // duraklar / başlangıç / varış: şeridin üstünde rozet
+  /* Senin tanımladığın noktalar (başlangıç, duraklar, varış) KIRMIZI;
+     rotanın kendiliğinden geçtiği iller siyah — hangisi senin kararın, hangisi yolun gereği belli olsun. */
+  const pinAt = (km, glyph, name) =>
+    '<div style="position:absolute;left:' + pct(km) + '%;top:50%;transform:translate(-50%,-50%);z-index:6;' +
+    'width:24px;height:24px;border-radius:50%;background:#d32020;color:#fff;font-size:11.5px;font-weight:900;' +
+    'display:flex;align-items:center;justify-content:center;border:2.5px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.5)" ' +
+    'title="' + String(name || "").replace(/"/g,"") + '">' + glyph + '</div>' +
+    '<div style="position:absolute;left:' + pct(km) + '%;top:0;bottom:0;width:2.5px;background:#d32020;' +
+    'transform:translateX(-50%);z-index:4;opacity:.9"></div>';
+  const pins = pinAt(0, "A", fromLoc.label) +
+    stopLocs.map((sl, i) => pinAt(stopKm[i] != null ? stopKm[i] : total * (i+1)/(stopLocs.length+1), String(i+1), sl.label)).join("") +
+    pinAt(total, "B", toLoc.label);
+
+  // her il dilimi: üstte il adı + HGS, altta km + en ucuz benzinci
+  const segsHtml = parts.map(pt => {
+    const w = (pt.to - pt.from) / total * 100;
+    const fee = Math.round(feeBetween(tsegs, pt.from, pt.to) || 0);
+    const win = (lastSegWinners || []).map(x => x.x).filter(Boolean)
+      .filter(x => x.s.km >= pt.from && x.s.km <= pt.to).sort((a,b) => a.price - b.price)[0]
+      || (lastStationPool || []).filter(x => x.s.km >= pt.from && x.s.km <= pt.to).sort((a,b) => a.price - b.price)[0];
+    const narrow = w < 7, tiny = w < 4;
+    return '<div style="position:absolute;left:' + pct(pt.from) + '%;width:' + w + '%;top:0;bottom:0;' +
+      'display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:0 3px;overflow:hidden" ' +
+      'title="' + String(pt.label || "").replace(/"/g,"") + ' · ' + Math.round(pt.to - pt.from) + ' km' +
+      (fee > 0 ? ' · HGS ' + fee + ' TL' : '') + '">' +
+      '<div style="text-align:center;line-height:1.25;white-space:nowrap">' +
+        (pt.label ? '<div style="font-size:' + (narrow ? 10.5 : 12) + 'px;font-weight:800;color:#1b2430">' +
+          (tiny ? "•" : pt.label) + '</div>' : '') +
+        (tiny ? '' : '<div style="font-size:' + (narrow ? 10 : 11) + 'px;font-weight:800;color:' +
+          (fee > 0 ? "#c0392b" : "#0f9d58") + '">' +
+          (fee > 0 ? "HGS " + fee.toLocaleString("tr-TR") + " TL" : (narrow ? "" : "HGS yok")) + '</div>') +
+      '</div>' +
+      '<div style="text-align:center;line-height:1.25;white-space:nowrap">' +
+        (tiny ? '' : '<div style="font-size:' + (narrow ? 10.5 : 12) + 'px;font-weight:800;color:#1b2430">' +
+          Math.round(pt.to - pt.from).toLocaleString("tr-TR") + ' km</div>') +
+        (narrow ? '' : '<div style="font-size:10.5px;color:#5b6672">' +
+          (win ? 'en ucuz: <b style="color:#1b2430">' + (win.s.brand || "İstasyon") + '</b> ' + fmt(win.price) + ' TL'
+               : '<span style="opacity:.6">' + (lastSegWinners ? "istasyon yok" : "aranıyor…") + '</span>') + '</div>') +
+      '</div></div>';
+  }).join("");
+
+  const wxHtml = (lastWeather || []).map(w => {
+    const ic = wmoIcon(w.code);
+    return '<div title="' + ic.label + (w.temp != null ? " · " + Math.round(w.temp) + "°C" : "") +
+      '" style="position:absolute;left:' + pct(w.km) + '%;top:50%;transform:translate(-50%,-48px);z-index:6;' +
+      'display:flex;flex-direction:column;align-items:center;line-height:1;pointer-events:auto">' +
+      '<span class="wx" style="filter:drop-shadow(0 1px 2px rgba(0,0,0,.3))">' + wxSvg(w.code) + '</span>' +
+      (w.temp != null ? '<span style="font-size:10px;font-weight:800;color:#1b2430">' + Math.round(w.temp) + '°</span>' : '') +
+      '</div>';
+  }).join("");
+  /* Araç figürü: seçili aracın kendi çizimi (emoji değil) */
+  const carEl2 = document.getElementById("carSel");
+  const myCar = (carEl2 && CARS[carEl2.value]) ? CARS[carEl2.value] : CARS[Object.keys(CARS)[0]];
+  const carFig = w =>
+    '<div style="width:' + w + 'px;height:' + Math.round(w * 0.42) + 'px;position:relative;overflow:hidden;flex:none">' +
+    '<div style="position:absolute;left:0;top:0;transform:scale(' + (w / 150).toFixed(3) + ');transform-origin:0 0">' +
+    carSvg(myCar.shape) + '</div></div>';
+  /* Araç HER ZAMAN yolun üzerinde: konum yoksa başlangıçta bekler, GPS gelince kayar.
+     left değeri geçişli olduğu için hareket ani değil, akıcı görünür. */
+  const carKm = tripCarKm != null ? tripCarKm : 0;
+  const live = tripCarKm != null;
+  const carTitle = live ? myCar.label + " — " + Math.round(carKm) + ". km, buradasınız"
+    : tripWatchId != null ? myCar.label + " — konum bekleniyor" : myCar.label + " — canlı takip kapalı";
+  const car =
+    '<div title="' + String(carTitle).replace(/"/g,"") + '" style="position:absolute;left:' + pct(carKm) + '%;top:50%;' +
+    'transform:translate(-50%,-50%);z-index:8;transition:left .9s cubic-bezier(.25,.8,.35,1);' +
+    'filter:drop-shadow(0 3px 5px rgba(0,0,0,.55));opacity:' + (live ? 1 : 0.55) + '">' +
+      (live ? '<div style="position:absolute;left:50%;top:50%;width:54px;height:54px;margin:-27px 0 0 -27px;' +
+              'border-radius:50%;background:radial-gradient(circle,rgba(26,115,232,.35) 0%,transparent 70%);' +
+              'animation:pulse 1.8s ease-in-out infinite"></div>' : '') +
+      carFig(62) +
+      (live ? '<div style="position:absolute;left:50%;top:100%;transform:translateX(-50%);margin-top:2px;' +
+              'background:#1a73e8;color:#fff;font-size:10px;font-weight:800;padding:1px 6px;border-radius:999px;' +
+              'white-space:nowrap">' + Math.round(carKm).toLocaleString("tr-TR") + '. km</div>' : '') +
+    '</div>';
   const carNote = tripCarKm != null
     ? '<span style="color:#1a73e8;font-weight:700">🚗 ' + Math.round(tripCarKm).toLocaleString("tr-TR") + '. km · ' +
       'kalan ' + Math.round(total - tripCarKm).toLocaleString("tr-TR") + ' km' +
@@ -3704,17 +3928,31 @@ function renderRouteTimeline(route){
   el.innerHTML =
     '<div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px 10px;background:var(--surface-1)">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">' +
-        '<b style="font-size:13.5px">🧭 Rota şeridi — ' + Math.round(total).toLocaleString("tr-TR") + ' km · ' + fmtDur(route.duration) + '</b>' +
+        '<span style="display:flex;align-items:center;gap:9px">' + carFig(52) +
+        '<span><b style="font-size:13.5px">Rota şeridi — ' + Math.round(total).toLocaleString("tr-TR") + ' km · ' +
+        fmtDur(route.duration) + (useCity ? ' · ' + parts.length + ' il' : '') + '</b>' +
+        '<div style="font-size:11.5px;font-weight:600;color:var(--text-muted)">' + myCar.label + '</div></span></span>' +
         '<span style="display:flex;gap:9px;align-items:center;font-size:12px">' + carNote +
         '<button class="btn" id="trackBtn" style="font-size:12px;font-weight:700;' +
         (tripWatchId != null ? 'border-color:var(--accent);color:var(--accent)' : '') + '">' +
         (tripWatchId != null ? '⏹ Takibi durdur' : '🚗 Canlı takip') + '</button></span>' +
       '</div>' +
+      '<div class="hint" style="margin:-2px 0 7px">Şeritteki çizgiler yol tipini gösterir: <b>otoyol</b> ve ' +
+      '<b>bölünmüş devlet yolu</b> refüjlü, <b>il yolu</b> tek platform (düz orta çizgi), <b>şehir içi</b> noktalı. ' +
+      'Her il diliminin üstündeki <b>HGS ... TL</b>, o ilin sınırları içinde kalan otoyol bölümü için ' +
+      'ödeyeceğin tutardır (toplamın o ile düşen payı). Kırmızı işaretler senin verdiğin noktalar (A, duraklar, B); ' +
+      'siyah yazılar rotanın geçtiği iller.' +
+      (useCity ? ' İl geçişleri en yakın il merkezine göre yaklaşıktır.' : '') + '</div>' +
       '<div style="overflow-x:auto"><div style="position:relative;min-width:' +
-        Math.max(560, (bounds.length - 1) * 190) + 'px;height:112px">' +
-        '<div style="position:absolute;left:0;right:0;top:50%;height:14px;transform:translateY(-50%);' +
-          'background:#2b3440;border-radius:7px"></div>' +
-        segsHtml.join("") + nodes + car +
+        Math.max(680, parts.length * 118) + 'px;height:150px">' +
+        '<div style="position:absolute;left:0;right:0;top:50%;height:34px;transform:translateY(-50%);' +
+          'border-radius:5px;overflow:hidden;background:#2f3842;' +
+          'box-shadow:inset 0 2px 0 rgba(255,255,255,.20), inset 0 -4px 8px rgba(0,0,0,.45), 0 7px 14px rgba(0,0,0,.28)">' +
+          (kindRuns.length
+            ? kindRuns.map(r => roadSlice(r.key, r.from / total * 100, (r.to - r.from) / total * 100)).join("")
+            : roadSlice("duble", 0, 100)) +
+        '</div>' +
+        segsHtml + nodes + wxHtml + pins + car +
       '</div></div>' +
     '</div>';
   const tb = document.getElementById("trackBtn");
@@ -4116,8 +4354,9 @@ function renderTripRoutes(){
   document.getElementById("tripNote").textContent = "Kullanılan pompa fiyatları — " + noteParts.join(" · ") +
     (tolls.length ? " · HGS ≈ " + tcSel.total.toLocaleString("tr-TR") + " TL tek yön / " + (tcSel.total*2).toLocaleString("tr-TR") + " TL gidiş-dönüş (tabloya dahil değildir)." : "");
   renderTripTotals(route);
-  lastSegWinners = null;
+  lastSegWinners = null; lastStationPool = null; lastWeather = null;
   renderRouteTimeline(route);
+  loadRouteWeather(route);
   resetTripSteps();
   tripStep("rota", "Rota çizildi", "ok",
     Math.round(route.distance/1000).toLocaleString("tr-TR") + " km · " + fmtDur(route.duration));
@@ -4593,6 +4832,7 @@ async function renderRouteStations(route, seq){
       return Object.assign({}, sg, { x: inSeg.length ? inSeg[0] : null });
     });
     lastSegWinners = segWin;
+    lastStationPool = ranked;
     renderRouteTimeline();
     const segOk = segWin.filter(w => w.x).length;
     if (ranked.length)
