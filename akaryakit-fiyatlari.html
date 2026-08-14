@@ -808,7 +808,7 @@
     BP, Türkiye'deki dağıtıcı fiyat listelerinde ayrı yayınlanmadığı için kaynakta yer almıyor.
     İstasyon konumları OpenStreetMap'ten, sürüş mesafeleri OSRM'den alınır; yol tarifi Google Maps'te açılır.
     Araç varsayılanları Ford Courier içindir, tüketim değerini kendi aracınıza göre değiştirebilirsiniz.
-    <b>Sürüm: v129</b> ·
+    <b>Sürüm: v132</b> ·
     Diğer kaynaklar: <a href="https://www.petrolofisi.com.tr/akaryakit-fiyatlari/mersin-akaryakit-fiyatlari" target="_blank" rel="noopener">Petrol Ofisi</a> ·
     <a href="https://www.opet.com.tr/akaryakit-fiyatlari/mersin" target="_blank" rel="noopener">Opet</a> ·
     <a href="https://www.aytemiz.com.tr/akaryakit-fiyatlari/benzin-fiyatlari/mersin-benzin-fiyati" target="_blank" rel="noopener">Aytemiz</a> ·
@@ -3671,14 +3671,35 @@ function cityRuns(route){
   }
   if (!runs.length) return [];
   runs[runs.length - 1].to = acc;
-  // 18 km'den kısa geçişleri komşusuna kat (yol ilin ucundan sıyırıp geçmiş olabilir)
-  const out = [];
+  // Ardışık aynı il parçalarını birleştir
+  let out = [];
   for (const r of runs){
-    const len = r.to - r.from;
     const prev = out[out.length - 1];
-    if (len < 18 && prev){ prev.to = r.to; continue; }
     if (prev && prev.city.slug === r.city.slug){ prev.to = r.to; continue; }
     out.push({ city: r.city, from: r.from, to: r.to });
+  }
+  /* KALABALIĞI ÖNLE: rotanın ucundan sıyırdığı kısa iller şeridi okunmaz hale getiriyor.
+     Hem oransal bir eşiğin altındakileri hem de sayı 9'u aşarsa en kısaları komşusuna katıyoruz.
+     Km kaybolmuyor — komşu dilime ekleniyor. */
+  const total = out.length ? out[out.length - 1].to : 0;
+  const minLen = Math.max(35, total * 0.05);
+  const MAXSEG = 9;
+  const lenOf = r => r.to - r.from;
+  const mergeSmallest = () => {
+    let idx = -1, best = Infinity;
+    out.forEach((r, i) => { const L = lenOf(r); if (L < best){ best = L; idx = i; } });
+    if (idx < 0 || out.length < 2) return false;
+    const prev = out[idx-1], next = out[idx+1];
+    const target = !prev ? next : !next ? prev : (lenOf(prev) >= lenOf(next) ? prev : next);
+    if (target === prev) prev.to = out[idx].to; else next.from = out[idx].from;
+    out.splice(idx, 1);
+    return true;
+  };
+  let guard = 0;
+  while (out.length > 1 && guard++ < 200){
+    const shortest = out.reduce((a2,b2) => lenOf(a2) <= lenOf(b2) ? a2 : b2);
+    if (out.length > MAXSEG || lenOf(shortest) < minLen){ if (!mergeSmallest()) break; }
+    else break;
   }
   return out;
 }
@@ -3768,6 +3789,52 @@ async function loadRouteWeather(route){
   } catch(e){}
 }
 
+/* HGS'ye göre bölümleme: her ücretli otoyol geçişi (giriş-çıkış) kendi dilimi olur,
+   aralardaki ücretsiz kesimler ayrı dilim. Kullanıcı "her HGS için ayrı yol" istedi —
+   şerit artık ödeme noktalarına göre okunuyor, il isimleri alt satırda kalıyor. */
+function tollParts(route){
+  const segs = tollSegmentsOf(route);
+  if (!segs.length) return [];
+  const total = segs[segs.length - 1].to;
+  const raw = [];
+  segs.forEach(sg => {
+    const road = sg.toll ? (sg.road || sg.ref || "Otoyol") : "";
+    const last = raw[raw.length - 1];
+    if (last && last.toll === sg.toll && last.road === road) last.to = sg.to;
+    else raw.push({ from: sg.from, to: sg.to, toll: sg.toll, road: road });
+  });
+  // aynı otoyolun iki parçası arasındaki kısa ücretsiz boşluk (≤12 km) yutulur
+  const merged = [];
+  for (const r of raw){
+    const prev = merged[merged.length - 1], prev2 = merged[merged.length - 2];
+    if (!r.toll && prev && prev.toll && (r.to - r.from) <= 12 && prev2 === undefined){ merged.push(r); continue; }
+    if (r.toll && prev && !prev.toll && (prev.to - prev.from) <= 12 && prev2 && prev2.toll && prev2.road === r.road){
+      prev2.to = r.to; merged.pop(); continue;
+    }
+    if (prev && prev.toll === r.toll && prev.road === r.road){ prev.to = r.to; continue; }
+    merged.push({ from: r.from, to: r.to, toll: r.toll, road: r.road });
+  }
+  // çok kısa dilimleri komşusuna kat
+  const minLen = Math.max(20, total * 0.03);
+  let guard = 0;
+  while (merged.length > 1 && guard++ < 200){
+    let idx = -1, best = Infinity;
+    merged.forEach((r, i) => { const L = r.to - r.from; if (L < best){ best = L; idx = i; } });
+    if (best >= minLen) break;
+    const prev = merged[idx-1], next = merged[idx+1];
+    const target = !prev ? next : !next ? prev : ((prev.to - prev.from) >= (next.to - next.from) ? prev : next);
+    if (target === prev) prev.to = merged[idx].to; else next.from = merged[idx].from;
+    merged.splice(idx, 1);
+  }
+  return merged;
+}
+/* Bir km aralığının geçtiği illeri kısa yaz: "Mersin–Adana" */
+function citySpanLabel(runs, a, b){
+  const hit = runs.filter(r => r.to > a + 1 && r.from < b - 1).map(r => r.city.name);
+  if (!hit.length) return "";
+  return hit.length === 1 ? hit[0] : hit[0] + "–" + hit[hit.length - 1];
+}
+
 function roadKindRuns(route){
   const out = [];
   let acc = 0;
@@ -3822,10 +3889,15 @@ function renderRouteTimeline(route){
   const pct = km => Math.max(0, Math.min(100, km / total * 100));
   const runs = cityRuns(route);
   const kindRuns = roadKindRuns(route);
+  const tparts = tollParts(route);
   const useCity = runs.length > 1;
   // bölümler: il geçişlerine göre (yoksa duraklara göre)
   let parts;
-  if (useCity) parts = runs.map(r => ({ from: r.from, to: r.to, label: r.city.name }));
+  if (tparts.length > 1)
+    parts = tparts.map(t => ({ from: t.from, to: t.to, toll: t.toll,
+      label: t.toll ? (t.road || "Otoyol") : "Ücretsiz yol",
+      sub: citySpanLabel(runs, t.from, t.to) }));
+  else if (useCity) parts = runs.map(r => ({ from: r.from, to: r.to, label: r.city.name, sub: "" }));
   else {
     const b = [0]; let a = 0;
     legs.forEach(l => { a += l.distance / 1000; b.push(a); });
@@ -3866,15 +3938,24 @@ function renderRouteTimeline(route){
       'title="' + String(pt.label || "").replace(/"/g,"") + ' · ' + Math.round(pt.to - pt.from) + ' km' +
       (fee > 0 ? ' · HGS ' + fee + ' TL' : '') + '">' +
       '<div style="text-align:center;line-height:1.25;white-space:nowrap">' +
-        (pt.label ? '<div style="font-size:' + (narrow ? 10.5 : 12) + 'px;font-weight:800;color:#1b2430">' +
-          (tiny ? "•" : pt.label) + '</div>' : '') +
+        (pt.label
+          ? (tiny
+              ? '<div style="font-size:9.5px;font-weight:800;color:#1b2430;writing-mode:vertical-rl;' +
+                'transform:rotate(180deg);max-height:34px;overflow:hidden;line-height:1">' + pt.label + '</div>'
+              : '<div style="font-size:' + (narrow ? 10.5 : 12) + 'px;font-weight:800;color:' +
+                (pt.toll ? "#a32020" : "#1b2430") + '">' + pt.label + '</div>' +
+                (pt.sub && !narrow ? '<div style="font-size:10px;color:#5b6672;font-weight:600">' + pt.sub + '</div>' : ''))
+          : '') +
         (tiny ? '' : '<div style="font-size:' + (narrow ? 10 : 11) + 'px;font-weight:800;color:' +
           (fee > 0 ? "#c0392b" : "#0f9d58") + '">' +
           (fee > 0 ? "HGS " + fee.toLocaleString("tr-TR") + " TL" : (narrow ? "" : "HGS yok")) + '</div>') +
       '</div>' +
       '<div style="text-align:center;line-height:1.25;white-space:nowrap">' +
-        (tiny ? '' : '<div style="font-size:' + (narrow ? 10.5 : 12) + 'px;font-weight:800;color:#1b2430">' +
-          Math.round(pt.to - pt.from).toLocaleString("tr-TR") + ' km</div>') +
+        (tiny
+          ? '<div style="font-size:9.5px;font-weight:800;color:#5b6672;writing-mode:vertical-rl;' +
+            'transform:rotate(180deg);max-height:34px;line-height:1">' + Math.round(pt.to - pt.from) + ' km</div>'
+          : '<div style="font-size:' + (narrow ? 10.5 : 12) + 'px;font-weight:800;color:#1b2430">' +
+            Math.round(pt.to - pt.from).toLocaleString("tr-TR") + ' km</div>') +
         (narrow ? '' : '<div style="font-size:10.5px;color:#5b6672">' +
           (win ? 'en ucuz: <b style="color:#1b2430">' + (win.s.brand || "İstasyon") + '</b> ' + fmt(win.price) + ' TL'
                : '<span style="opacity:.6">' + (lastSegWinners ? "istasyon yok" : "aranıyor…") + '</span>') + '</div>') +
@@ -3930,7 +4011,7 @@ function renderRouteTimeline(route){
       '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">' +
         '<span style="display:flex;align-items:center;gap:9px">' + carFig(52) +
         '<span><b style="font-size:13.5px">Rota şeridi — ' + Math.round(total).toLocaleString("tr-TR") + ' km · ' +
-        fmtDur(route.duration) + (useCity ? ' · ' + parts.length + ' il' : '') + '</b>' +
+        fmtDur(route.duration) + (tparts.length > 1 ? ' · ' + tparts.filter(t => t.toll).length + ' HGS bölümü' : (useCity ? ' · ' + parts.length + ' il' : '')) + '</b>' +
         '<div style="font-size:11.5px;font-weight:600;color:var(--text-muted)">' + myCar.label + '</div></span></span>' +
         '<span style="display:flex;gap:9px;align-items:center;font-size:12px">' + carNote +
         '<button class="btn" id="trackBtn" style="font-size:12px;font-weight:700;' +
@@ -3939,10 +4020,10 @@ function renderRouteTimeline(route){
       '</div>' +
       '<div class="hint" style="margin:-2px 0 7px">Şeritteki çizgiler yol tipini gösterir: <b>otoyol</b> ve ' +
       '<b>bölünmüş devlet yolu</b> refüjlü, <b>il yolu</b> tek platform (düz orta çizgi), <b>şehir içi</b> noktalı. ' +
-      'Her il diliminin üstündeki <b>HGS ... TL</b>, o ilin sınırları içinde kalan otoyol bölümü için ' +
-      'ödeyeceğin tutardır (toplamın o ile düşen payı). Kırmızı işaretler senin verdiğin noktalar (A, duraklar, B); ' +
-      'siyah yazılar rotanın geçtiği iller.' +
-      (useCity ? ' İl geçişleri en yakın il merkezine göre yaklaşıktır.' : '') + '</div>' +
+      'Şerit <b>HGS bölümlerine</b> göre ayrılır: her ücretli otoyol geçişi kendi dilimidir ve üstünde ' +
+      'o geçişin ücreti yazar; aralardaki <b>ücretsiz yol</b> kesimleri ayrı dilimdir. İkinci satırda o dilimin ' +
+      'geçtiği iller görünür. Kırmızı işaretler senin verdiğin noktalar (A, duraklar, B).' +
+      ' İl adları en yakın il merkezine göre yaklaşıktır.' + '</div>' +
       '<div style="overflow-x:auto"><div style="position:relative;min-width:' +
         Math.max(680, parts.length * 118) + 'px;height:150px">' +
         '<div style="position:absolute;left:0;right:0;top:50%;height:34px;transform:translateY(-50%);' +
@@ -5352,6 +5433,34 @@ populateCitySel();
 initTrMap();
 userLoc = { lat: currentCity.lat, lon: currentCity.lon };
 loadLive();
+/* "Sürüm eski mi?" derdini bitiren kontrol: yayındaki dosyanın sürüm numarasına bakar,
+   seninkinden yeniyse üstte tek tıkla yenileyen bir şerit çıkarır. */
+(async function checkNewVersion(){
+  try {
+    if (!/github\.io$/.test(location.hostname)) return;
+    const mine = (document.body.innerHTML.match(/Sürüm:\s*v(\d+)/) || [])[1];
+    if (!mine) return;
+    const r = await fetchT("https://raw.githubusercontent.com/canbkr/Gas/main/akaryakit-fiyatlari.html?t=" + Date.now(), 12000);
+    const txt = await r.text();
+    const live = (txt.match(/Sürüm:\s*v(\d+)/) || [])[1];
+    if (!live || +live <= +mine) return;
+    const bar = document.createElement("div");
+    bar.style.cssText = "position:fixed;left:0;right:0;top:0;z-index:9999;background:#1a73e8;color:#fff;" +
+      "font-size:13.5px;font-weight:700;padding:9px 14px;display:flex;gap:12px;align-items:center;" +
+      "justify-content:center;box-shadow:0 2px 10px rgba(0,0,0,.3)";
+    bar.innerHTML = 'Yeni sürüm yayında: <b>v' + live + '</b> (sende v' + mine + ') ' +
+      '<button id="vRefresh" style="background:#fff;color:#1a73e8;border:0;border-radius:7px;padding:4px 12px;' +
+      'font-weight:800;cursor:pointer">Yenile</button>' +
+      '<span id="vClose" style="cursor:pointer;opacity:.8">✕</span>';
+    document.body.appendChild(bar);
+    document.getElementById("vRefresh").addEventListener("click", () => {
+      const u = new URL(location.href);
+      u.searchParams.set("v", live + "-" + Date.now().toString(36));   // önbelleği kesin atla
+      location.replace(u.toString());
+    });
+    document.getElementById("vClose").addEventListener("click", () => bar.remove());
+  } catch(e){}
+})();
 setInterval(loadLive, 15 * 60 * 1000);   // 15 dk'da bir otomatik yenile
 
 // Açılışta son onaylı konumu otomatik geri yükle ve istasyonları getir (0 tık deneyimi)
