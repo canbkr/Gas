@@ -808,7 +808,7 @@
     BP, Türkiye'deki dağıtıcı fiyat listelerinde ayrı yayınlanmadığı için kaynakta yer almıyor.
     İstasyon konumları OpenStreetMap'ten, sürüş mesafeleri OSRM'den alınır; yol tarifi Google Maps'te açılır.
     Araç varsayılanları Ford Courier içindir, tüketim değerini kendi aracınıza göre değiştirebilirsiniz.
-    <b>Sürüm: v137</b> ·
+    <b>Sürüm: v138</b> ·
     Diğer kaynaklar: <a href="https://www.petrolofisi.com.tr/akaryakit-fiyatlari/mersin-akaryakit-fiyatlari" target="_blank" rel="noopener">Petrol Ofisi</a> ·
     <a href="https://www.opet.com.tr/akaryakit-fiyatlari/mersin" target="_blank" rel="noopener">Opet</a> ·
     <a href="https://www.aytemiz.com.tr/akaryakit-fiyatlari/benzin-fiyatlari/mersin-benzin-fiyati" target="_blank" rel="noopener">Aytemiz</a> ·
@@ -4223,11 +4223,11 @@ function routeBadge(rt, i, sel){
   if (!c || c.length < 2) return;
   const frac = [0.50, 0.26, 0.74, 0.88][i] ?? 0.5;              // rozetler üst üste binmesin
   const p = c[Math.floor((c.length - 1) * frac)];
-  const col = sel ? "#ff7a1a" : ROUTE_COLORS[i % ROUTE_COLORS.length];
-  const html = '<div style="transform:translate(-50%,-50%);background:' + col + ';color:#fff;font-weight:800;' +
-    'font-size:12px;letter-spacing:.3px;padding:4px 10px;border-radius:999px;white-space:nowrap;cursor:pointer;' +
-    'box-shadow:0 2px 7px rgba(0,0,0,.4);border:2px solid #fff">ROTA ' + (i+1) +
-    (sel ? ' ✓' : ' · ' + (rt.distance/1000).toFixed(0) + ' km') + '</div>';
+  // Sade etiket: beyaz zemin, SİYAH yazı, ince koyu çerçeve — renkli balon haritayı kirletiyordu
+  const html = '<div style="transform:translate(-50%,-50%);background:#fff;color:#111;font-weight:800;' +
+    'font-size:12px;padding:3px 9px;border-radius:6px;white-space:nowrap;cursor:pointer;' +
+    'border:' + (sel ? "2px" : "1.5px") + ' solid #2b3440;box-shadow:0 1px 4px rgba(0,0,0,.28)">' +
+    'Rota ' + (i+1) + (sel ? ' ✓' : ' · ' + (rt.distance/1000).toFixed(0) + ' km') + '</div>';
   L.marker([p[1], p[0]], { icon: L.divIcon({ className:"", html, iconSize:[0,0] }), zIndexOffset: 900 })
     .addTo(tripLayer).on("click", () => { selRoute = i; renderTripRoutes(); });
 }
