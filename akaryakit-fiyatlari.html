@@ -553,6 +553,9 @@
           placeholder="Google Places API anahtarı (opsiyonel — en iyi kapsam)">
         <button class="btn" id="gkeySave">Anahtarı kaydet</button>
         <span class="mini" id="gkeyStatus"></span>
+        <label class="mini" style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap">
+          <input type="checkbox" id="gplacesOn"> Google Places kullan</label>
+        <span class="mini" id="gquotaInfo" style="flex-basis:100%"></span>
         <input class="sel" id="workerInp" type="text" style="width:300px"
           placeholder="Kişisel sunucu adresi (opsiyonel — https://...workers.dev)">
         <button class="btn" id="workerSave">Sunucuyu kaydet</button>
@@ -780,7 +783,7 @@
     BP, Türkiye'deki dağıtıcı fiyat listelerinde ayrı yayınlanmadığı için kaynakta yer almıyor.
     İstasyon konumları OpenStreetMap'ten, sürüş mesafeleri OSRM'den alınır; yol tarifi Google Maps'te açılır.
     Araç varsayılanları Ford Courier içindir, tüketim değerini kendi aracınıza göre değiştirebilirsiniz.
-    <b>Sürüm: v109</b> ·
+    <b>Sürüm: v110</b> ·
     Diğer kaynaklar: <a href="https://www.petrolofisi.com.tr/akaryakit-fiyatlari/mersin-akaryakit-fiyatlari" target="_blank" rel="noopener">Petrol Ofisi</a> ·
     <a href="https://www.opet.com.tr/akaryakit-fiyatlari/mersin" target="_blank" rel="noopener">Opet</a> ·
     <a href="https://www.aytemiz.com.tr/akaryakit-fiyatlari/benzin-fiyatlari/mersin-benzin-fiyati" target="_blank" rel="noopener">Aytemiz</a> ·
@@ -2278,6 +2281,28 @@ function initGkeyUI(){
     stat.textContent = v ? "✓ kaydedildi — bir sonraki aramada Google verisi kullanılır" : "anahtar silindi";
     stat.style.color = v ? "var(--good)" : "var(--text-muted)";
   });
+  const cb = document.getElementById("gplacesOn");
+  cb.checked = !store.get("gplaces-off");
+  cb.addEventListener("change", () => { store.set("gplaces-off", cb.checked ? null : 1); renderGQuota(); });
+  renderGQuota();
+}
+/* Kullanıcıya dürüst gösterge: bu ay kaç faturalı çağrı harcandı, fren devrede mi */
+function renderGQuota(){
+  const el = document.getElementById("gquotaInfo"); if (!el) return;
+  const u = gqUsed(), off = !!store.get("gplaces-off");
+  const pct = Math.min(100, Math.round(u / GQ_FREE * 100));
+  const kalan = Math.max(0, Math.floor((GQ_STOP - u) / GQ_PER_SEARCH));
+  let t = "Google kullanımı — bu ay " + u.toLocaleString("tr-TR") + " / " + GQ_FREE.toLocaleString("tr-TR") +
+          " ücretsiz çağrı (%" + pct + ")";
+  if (off){
+    t += " · elle kapatıldı, istasyonlar OpenStreetMap'ten geliyor (ücretsiz)";
+  } else if (gqBlocked()){
+    t += " · ⛔ fren devrede: ücretsiz sınıra yaklaşıldı, ay sonuna kadar OpenStreetMap kullanılıyor — ücret yazmaz";
+  } else {
+    t += " · yaklaşık " + kalan.toLocaleString("tr-TR") + " arama hakkın kaldı (her arama " + GQ_PER_SEARCH + " çağrı)";
+  }
+  el.textContent = t;
+  el.style.color = off || gqBlocked() ? "var(--warn)" : "var(--text-muted)";
 }
 function initWorkerUI(){
   const inp = document.getElementById("workerInp"), stat = document.getElementById("workerStatus");
@@ -2301,7 +2326,22 @@ function initWorkerUI(){
   });
 }
 const DEFAULT_GPLACES_KEY = "AIzaSyBp5l54gPSAidWgJB8hiBkt1vaYn36SwKY";   // site anahtarı (canbkr.github.io kısıtlı, tarayıcı anahtarı)
-function activeGKey(){ return store.get("gplaces-key") || DEFAULT_GPLACES_KEY; }
+
+/* ---- Google çağrı sayacı: fatura freni ----
+   Places API (New) Nearby Search: ayda 5.000 çağrı ücretsiz, sonrası 1.000 çağrı = 32 $.
+   Google'ın kendi tarafında güvenilir bir "kes" düğmesi yok (bütçe uyarısı sadece mail atar,
+   günlük kota bu SKU'da düşürülemiyor). O yüzden freni uygulamanın içine koyuyoruz:
+   ay içinde 4.500 çağrıya ulaşınca Google kapanır, arama OpenStreetMap'ten sürer. */
+const GQ_FREE = 5000, GQ_STOP = 4500, GQ_PER_SEARCH = 7;
+function gqKey(){ const d = new Date(); return "gcalls-" + d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0"); }
+function gqUsed(){ return store.get(gqKey()) || 0; }
+function gqAdd(n){ store.set(gqKey(), gqUsed() + n); if (typeof renderGQuota === "function") renderGQuota(); }
+function gqBlocked(){ return gqUsed() >= GQ_STOP; }
+function activeGKey(){
+  if (store.get("gplaces-off")) return null;          // kullanıcı elle kapattı
+  if (gqBlocked()) return null;                       // ay içi ücretsiz sınıra yaklaşıldı
+  return store.get("gplaces-key") || DEFAULT_GPLACES_KEY;
+}
 async function googleStations(lat, lon, radiusM, org){
   const key = activeGKey();
   if (!key) return null;
@@ -2314,6 +2354,7 @@ async function googleStations(lat, lon, radiusM, org){
     const a = k * Math.PI / 3;
     centers.push([lat + Math.sin(a) * off, lon + Math.cos(a) * offLon, rr * 0.6]);
   }
+  gqAdd(centers.length);                                // her daire ayrı bir faturalı çağrı
   const results = await Promise.allSettled(centers.map(c => googleNearbyOnce(key, c[0], c[1], c[2], org)));
   const seen = new Set(), out = [];
   let firstErr = null;
