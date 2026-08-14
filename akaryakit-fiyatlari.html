@@ -808,7 +808,7 @@
     BP, Türkiye'deki dağıtıcı fiyat listelerinde ayrı yayınlanmadığı için kaynakta yer almıyor.
     İstasyon konumları OpenStreetMap'ten, sürüş mesafeleri OSRM'den alınır; yol tarifi Google Maps'te açılır.
     Araç varsayılanları Ford Courier içindir, tüketim değerini kendi aracınıza göre değiştirebilirsiniz.
-    <b>Sürüm: v133</b> ·
+    <b>Sürüm: v134</b> ·
     Diğer kaynaklar: <a href="https://www.petrolofisi.com.tr/akaryakit-fiyatlari/mersin-akaryakit-fiyatlari" target="_blank" rel="noopener">Petrol Ofisi</a> ·
     <a href="https://www.opet.com.tr/akaryakit-fiyatlari/mersin" target="_blank" rel="noopener">Opet</a> ·
     <a href="https://www.aytemiz.com.tr/akaryakit-fiyatlari/benzin-fiyatlari/mersin-benzin-fiyati" target="_blank" rel="noopener">Aytemiz</a> ·
@@ -3842,35 +3842,65 @@ function roadKindRuns(route){
     const d = (st.distance || 0) / 1000;
     if (!d) return;
     const k = ROAD_KINDS.find(x => x.test(st)) || ROAD_KINDS[ROAD_KINDS.length - 1];
+    const ln = lanesFor(st, k.key);
     const last = out[out.length - 1];
-    if (last && last.key === k.key) last.to = acc + d;
-    else out.push({ key: k.key, label: k.label, lanes: k.lanes, from: acc, to: acc + d });
+    if (last && last.key === k.key && last.n === ln.n) last.to = acc + d;
+    else out.push({ key: k.key, label: k.label, lanes: k.lanes, n: ln.n, known: ln.known,
+                    ref: (st.ref || st.name || "").trim(), from: acc, to: acc + d });
     acc += d;
   }));
   return out;
 }
-/* Tek bir yol dilimi: 3B görünümlü asfalt + tipine uygun şerit çizgileri */
-function roadSlice(kind, leftPct, widthPct){
-  const dash = (topPct, style) =>
-    '<div style="position:absolute;left:0;right:0;top:' + topPct + '%;height:2px;' +
-    (style === "solid" ? 'background:#f3f4f6;opacity:.85'
-     : style === "dot" ? 'background:repeating-linear-gradient(90deg,#f3f4f6 0 5px,transparent 5px 16px);opacity:.7'
-     : 'background:repeating-linear-gradient(90deg,#f3f4f6 0 18px,transparent 18px 40px);opacity:.8') + '"></div>';
-  let lines = "", median = "";
-  if (kind === "otoyol"){
-    lines = dash(23) + dash(77);
-    median = '<div style="position:absolute;left:0;right:0;top:44%;height:12%;background:#7c8794;' +
-             'box-shadow:inset 0 1px 0 rgba(255,255,255,.25)"></div>';
-  } else if (kind === "duble"){
-    lines = dash(24) + dash(76);
-    median = '<div style="position:absolute;left:0;right:0;top:46%;height:8%;background:#7c8794"></div>';
+/* Bilinen otoyolların gerçek şerit sayısı (yön başına). Rota servisinde şerit bilgisi yok;
+   bu tablo elle derlendi, tabloda olmayan yollarda sınıfın tipik değeri kullanılır. */
+const ROAD_LANES = [
+  { rx: /\bO[- ]?20\b|ankara çevre/i,                      lanes: 3, name: "Ankara Çevre Otoyolu" },
+  // Ankara–Niğde: ana gövde 3+3; Ankara çıkışındaki ilk ~30 km 2+2 (işletmecinin verisi)
+  { rx: /\bO[- ]?21\b|ankara.?ni[ğg]de|ankara.?tarsus/i,   lanes: 3, name: "Ankara–Niğde (O-21)" },
+  { rx: /\bO[- ]?4\b|anadolu otoyol/i,                     lanes: 3, name: "Anadolu Otoyolu (O-4)" },
+  { rx: /\bO[- ]?7\b|kuzey marmara/i,                      lanes: 3, name: "Kuzey Marmara (O-7)" },
+  { rx: /\bO[- ]?5\b|gebze|osmangazi/i,                    lanes: 3, name: "Gebze–İzmir (O-5)" },
+  { rx: /\bO[- ]?3\b|edirne.?istanbul/i,                   lanes: 2, name: "Edirne–İstanbul (O-3)" },
+  { rx: /\bO[- ]?1\b|\bO[- ]?2\b|çevre ?yolu/i,           lanes: 3, name: "Çevre yolu" },
+  { rx: /\bO[- ]?33\b|menemen|ayd[ıi]n/i,                  lanes: 2, name: "Menemen–Aydın (O-33)" },
+  { rx: /\bO[- ]?5[123]\b|delice|pozant[ıi]|gaziantep/i,   lanes: 2, name: "Otoyol" }
+];
+function lanesFor(step, kindKey){
+  const t = [step && step.ref || "", step && step.name || ""].join(" ");
+  for (const r of ROAD_LANES) if (r.rx.test(t)) return { n: r.lanes, known: true };
+  return { n: kindKey === "otoyol" ? 2 : kindKey === "duble" ? 2 : 1, known: false };
+}
+/* Tek bir yol dilimi: 3B asfalt + GERÇEK şerit sayısına göre çizgiler.
+   Bölünmüş yolda ortada refüj, her platformda (şerit-1) kesikli çizgi;
+   tek platformlu yolda ortada düz çizgi (1+1). */
+function roadSlice(kind, leftPct, widthPct, lanes){
+  const n = Math.max(1, Math.min(4, lanes || (kind === "otoyol" || kind === "duble" ? 2 : 1)));
+  const divided = (kind === "otoyol" || kind === "duble");
+  const dashAt = topPct =>
+    '<div style="position:absolute;left:0;right:0;top:' + topPct.toFixed(2) + '%;height:2px;' +
+    'background:repeating-linear-gradient(90deg,#f3f4f6 0 18px,transparent 18px 40px);opacity:.8"></div>';
+  const solidAt = topPct =>
+    '<div style="position:absolute;left:0;right:0;top:' + topPct.toFixed(2) + '%;height:2px;background:#f3f4f6;opacity:.85"></div>';
+  const dotAt = topPct =>
+    '<div style="position:absolute;left:0;right:0;top:' + topPct.toFixed(2) + '%;height:2px;' +
+    'background:repeating-linear-gradient(90deg,#f3f4f6 0 5px,transparent 5px 16px);opacity:.7"></div>';
+  let inner = "";
+  if (divided){
+    const medTop = kind === "otoyol" ? 44 : 46, medH = kind === "otoyol" ? 12 : 8;
+    inner += '<div style="position:absolute;left:0;right:0;top:' + medTop + '%;height:' + medH + '%;' +
+             'background:#7c8794;box-shadow:inset 0 1px 0 rgba(255,255,255,.25)"></div>';
+    for (let i = 1; i < n; i++){                       // üst platform
+      inner += dashAt(medTop * i / n);
+      inner += dashAt(medTop + medH + (100 - medTop - medH) * i / n);   // alt platform
+    }
   } else if (kind === "tek"){
-    lines = dash(50, "solid");
+    inner += solidAt(50);
+    for (let i = 1; i < n; i++){ inner += dashAt(50 * i / n); inner += dashAt(50 + 50 * i / n); }
   } else {
-    lines = dash(50, "dot");
+    inner += dotAt(50);
   }
   return '<div style="position:absolute;left:' + leftPct + '%;width:' + widthPct + '%;top:0;bottom:0;overflow:hidden;' +
-    'background:linear-gradient(180deg,#5b6672 0%,#454f5b 38%,#2f3842 78%,#222932 100%)">' + median + lines + '</div>';
+    'background:linear-gradient(180deg,#5b6672 0%,#454f5b 38%,#2f3842 78%,#222932 100%)">' + inner + '</div>';
 }
 
 function renderRouteTimeline(route){
@@ -4018,8 +4048,11 @@ function renderRouteTimeline(route){
         (tripWatchId != null ? 'border-color:var(--accent);color:var(--accent)' : '') + '">' +
         (tripWatchId != null ? '⏹ Takibi durdur' : '🚗 Canlı takip') + '</button></span>' +
       '</div>' +
-      '<div class="hint" style="margin:-2px 0 7px">Şeritteki çizgiler yol tipini gösterir: <b>otoyol</b> ve ' +
+      '<div class="hint" style="margin:-2px 0 7px">Ortadaki gri bant refüjdür: <b>otoyol</b> ve ' +
       '<b>bölünmüş devlet yolu</b> refüjlü, <b>il yolu</b> tek platform (düz orta çizgi), <b>şehir içi</b> noktalı. ' +
+      'Asfalt üzerindeki çizgi sayısı o yolun <b>gerçek şerit sayısını</b> gösterir (yön başına): ' +
+      'ör. Ankara–Niğde Otoyolu 3+3 (Ankara çıkışındaki ilk ~30 km 2+2), Anadolu Otoyolu 3+3, il yolu 1+1. Bilinen otoyollar için elle derlenmiş ' +
+      'tablodan, diğerleri için sınıfın tipik değerinden çizilir. ' +
       'Şerit <b>HGS bölümlerine</b> göre ayrılır: her ücretli otoyol geçişi kendi dilimidir ve üstünde ' +
       'o geçişin ücreti yazar; aralardaki <b>ücretsiz yol</b> kesimleri ayrı dilimdir. İkinci satırda o dilimin ' +
       'geçtiği iller görünür. Kırmızı işaretler senin verdiğin noktalar (A, duraklar, B).' +
@@ -4030,8 +4063,8 @@ function renderRouteTimeline(route){
           'border-radius:5px;overflow:hidden;background:#2f3842;' +
           'box-shadow:inset 0 2px 0 rgba(255,255,255,.20), inset 0 -4px 8px rgba(0,0,0,.45), 0 7px 14px rgba(0,0,0,.28)">' +
           (kindRuns.length
-            ? kindRuns.map(r => roadSlice(r.key, r.from / total * 100, (r.to - r.from) / total * 100)).join("")
-            : roadSlice("duble", 0, 100)) +
+            ? kindRuns.map(r => roadSlice(r.key, r.from / total * 100, (r.to - r.from) / total * 100, r.n)).join("")
+            : roadSlice("duble", 0, 100, 2)) +
         '</div>' +
         segsHtml + nodes + wxHtml + pins + car +
       '</div></div>' +
