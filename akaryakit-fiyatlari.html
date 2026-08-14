@@ -735,7 +735,6 @@
       <div id="mapLegend" style="display:none;margin-top:8px"></div>
       <div id="tollGates" style="margin:10px 0 0"></div>
       <div id="routeStations" style="margin:10px 0 0"></div>
-      <div id="routeFood" style="margin:10px 0 0"></div>
       <div class="tablewrap" id="tripWrap" style="display:none;margin-top:12px">
         <table>
           <thead>
@@ -809,7 +808,7 @@
     BP, Türkiye'deki dağıtıcı fiyat listelerinde ayrı yayınlanmadığı için kaynakta yer almıyor.
     İstasyon konumları OpenStreetMap'ten, sürüş mesafeleri OSRM'den alınır; yol tarifi Google Maps'te açılır.
     Araç varsayılanları Ford Courier içindir, tüketim değerini kendi aracınıza göre değiştirebilirsiniz.
-    <b>Sürüm: v136</b> ·
+    <b>Sürüm: v137</b> ·
     Diğer kaynaklar: <a href="https://www.petrolofisi.com.tr/akaryakit-fiyatlari/mersin-akaryakit-fiyatlari" target="_blank" rel="noopener">Petrol Ofisi</a> ·
     <a href="https://www.opet.com.tr/akaryakit-fiyatlari/mersin" target="_blank" rel="noopener">Opet</a> ·
     <a href="https://www.aytemiz.com.tr/akaryakit-fiyatlari/benzin-fiyatlari/mersin-benzin-fiyati" target="_blank" rel="noopener">Aytemiz</a> ·
@@ -3646,7 +3645,7 @@ function fmtDur(sec){
    o bölümün en ucuz benzincisi kim? Hepsi tek bakışta görünsün diye yatay şerit.
    Araç figürü GPS'e göre şerit üzerinde canlı ilerler. */
 let tripCurrentRoute = null, tripWatchId = null, tripCarKm = null, tripCarOff = null, carLayer = null;
-let lastSegWinners = null, lastStationPool = null, lastFood = null, foodLayer = null;
+let lastSegWinners = null, lastStationPool = null;
 
 /* Rotanın hangi il sınırları içinden geçtiği: her ~4 km'de bir örnek alıp en yakın il merkezine
    bakıyoruz (Voronoi yaklaşımı). Gerçek il sınırı verisi uygulamada yok — bu yüzden bu bir
@@ -4396,8 +4395,6 @@ function renderTripRoutes(){
     lastGateRows = [];
     if (gateLayer) gateLayer.clearLayers();
     if (stationLayer) stationLayer.clearLayers();
-    if (foodLayer) foodLayer.clearLayers();
-    lastFood = null;
     drawMapLegend();               // eski harita-üstü kutuyu kaldır (lejant artık haritanın altında)
     // harita altı: renk açıklaması + ücretli/ücretsiz km dökümü
     const lg = document.getElementById("mapLegend");
@@ -4422,7 +4419,6 @@ function renderTripRoutes(){
           chip('<span style="color:#e2711d;display:inline-flex">' + FLAME("#e2711d") + '</span> 🔥 Benzinlik (yol kenarı)') +
           chip('<span style="color:#12a94e;display:inline-flex">' + FLAME("#12a94e") + '</span> Öneri #1 — en uygun (yeşil alev)') +
           chip('<span style="color:#12919e;display:inline-flex">' + FLAME("#12919e") + '</span> H1, H2… hat hat en ucuz') +
-          chip('<span style="width:15px;height:15px;border-radius:5px;background:#7a3fbf;border:2px solid #fff;display:inline-block"></span> 🍽 Yemek / dinlenme tesisi') +
           chip('<svg width="13" height="17" viewBox="0 0 30 40" style="flex:none">' +
             '<path d="M15 38.5C15 38.5 27.5 23.2 27.5 14.4A12.5 12.5 0 1 0 2.5 14.4C2.5 23.2 15 38.5 15 38.5Z" fill="#2b3440" stroke="#fff" stroke-width="2.4"/>' +
             '</svg> A başlangıç · 1,2,3 durak · B varış') +
@@ -4591,7 +4587,7 @@ async function overpassChunked(pts, kind, around, alive, onPartial){
   /* HIZ: parça sayısı = gecikme. Her parça ayrı bir istek ve aralarında bekleme vardı;
      500 km'lik rota 20+ tur sürüyordu. Parça başına nokta sayısını büyütüp (sorgu metni yine kısa),
      paralelliği artırıp aradaki beklemeyi kaldırdık. */
-  const CH = kind === "fuel" ? 30 : kind === "food" ? 30 : 40;
+  const CH = kind === "fuel" ? 30 : 40;
   const polys = [];
   for (let i = 0; i < pts.length; i += CH){
     const part = pts.slice(Math.max(0, i - 1), i + CH);       // parçalar arasında 1 nokta örtüşsün
@@ -4599,18 +4595,13 @@ async function overpassChunked(pts, kind, around, alive, onPartial){
   }
   const seen = new Set(), out = [];
   let okCount = 0, failCount = 0;
-  const PAR = kind === "fuel" ? 5 : kind === "food" ? 4 : 6;
+  const PAR = kind === "fuel" ? 5 : 6;
   for (let i = 0; i < polys.length; i += PAR){
     if (alive && !alive()) return null;
     const batch = await Promise.all(polys.slice(i, i + PAR).map(poly => {
       const q = kind === "fuel"
         ? "[out:json][timeout:25];(node[amenity=fuel](around:" + around + "," + poly + ");" +
           "way[amenity=fuel](around:" + around + "," + poly + "););out center 150;"
-        : kind === "food"
-        ? "[out:json][timeout:25];(node[amenity~\"^(restaurant|fast_food|cafe)$\"](around:" + around + "," + poly + ");" +
-          "way[amenity~\"^(restaurant|fast_food|cafe)$\"](around:" + around + "," + poly + ");" +
-          "node[highway~\"^(services|rest_area)$\"](around:" + around + "," + poly + ");" +
-          "way[highway~\"^(services|rest_area)$\"](around:" + around + "," + poly + "););out center 200;"
         : "[out:json][timeout:25];(node[barrier=toll_booth](around:" + around + "," + poly + ");" +
           "node[highway=toll_gantry](around:" + around + "," + poly + ");" +
           "way[barrier=toll_booth](around:" + around + "," + poly + "););out center 80;";
@@ -4843,96 +4834,6 @@ async function renderTollGates(route, seq){
   tripStep("hgs", "HGS gişeleri hazır", "ok",
     (gateSummary ? gateSummary.count + " geçiş · " + gateSummary.total.toLocaleString("tr-TR") + " TL" : ""));
 }
-/* ---------- YOL ÜSTÜ YEMEK & DİNLENME TESİSLERİ ----------
-   Kaynak OpenStreetMap: amenity=restaurant/fast_food/cafe ve highway=services/rest_area.
-   Türkiye'de kapsam istasyonlara göre zayıf — ekranda bunu açıkça yazıyoruz, "yok" demiyoruz. */
-const FOOD_KIND = t => {
-  const a = (t && t.amenity) || "", h = (t && t.highway) || "";
-  if (h === "services") return { key: "services", label: "Dinlenme tesisi", icon: "🅿️" };
-  if (h === "rest_area") return { key: "rest", label: "Mola alanı", icon: "🅿️" };
-  if (a === "restaurant") return { key: "rest2", label: "Restoran", icon: "🍽" };
-  if (a === "fast_food") return { key: "ff", label: "Fast food", icon: "🍔" };
-  if (a === "cafe") return { key: "cafe", label: "Kafe", icon: "☕" };
-  return { key: "other", label: "Yeme-içme", icon: "🍽" };
-};
-async function renderRouteFood(route, seq, pts, dense){
-  const box = document.getElementById("routeFood");
-  if (!box || !route || !route.geometry) return;
-  const totalKm = route.distance / 1000;
-  if (totalKm > 2500){ box.innerHTML = ""; return; }
-  box.innerHTML = '<span class="gi-sub"><span class="spinner"></span>Yol üstü yemek ve dinlenme tesisleri aranıyor…</span>';
-  tripStep("food", "Yemek & dinlenme tesisleri aranıyor…", "run");
-  const els = await overpassChunked(pts, "food", 900, () => seq === routeSeq);
-  if (seq !== routeSeq) return;
-  if (!els){
-    tripStep("food", "Yemek verisi alınamadı", "fail");
-    box.innerHTML = '<div style="border:1px solid var(--border);border-radius:12px;padding:10px 14px;background:var(--surface-1)">' +
-      '<span class="gi-sub">🍽 Yemek/dinlenme verisine şu an ulaşılamadı.</span></div>';
-    return;
-  }
-  // yola dik uzaklık + km
-  const list = els.map(e => {
-    const la = e.lat != null ? e.lat : (e.center && e.center.lat);
-    const lo = e.lon != null ? e.lon : (e.center && e.center.lon);
-    if (la == null) return null;
-    let best = 1e9, km = 0;
-    for (const d of dense){ const dd = haversine({ lat: la, lon: lo }, d); if (dd < best){ best = dd; km = d.km; } }
-    const k = FOOD_KIND(e.tags);
-    return { lat: la, lon: lo, name: (e.tags && (e.tags.name || e.tags.brand)) || k.label,
-             kind: k, off: best, km: km };
-  }).filter(Boolean).filter(x => x.off <= 0.9).sort((a,b) => a.km - b.km);
-  // aynı tesisteki tekrarları ayıkla (150 m)
-  const uniq = [];
-  list.forEach(x => { if (!uniq.some(y => haversine(x, y) < 0.15 && y.name === x.name)) uniq.push(x); });
-  lastFood = uniq;
-  // harita işaretleri
-  if (typeof L !== "undefined" && tripMapObj){
-    if (!foodLayer) foodLayer = L.layerGroup().addTo(tripMapObj);
-    foodLayer.clearLayers();
-    uniq.forEach(f => {
-      const html = '<div style="transform:translate(-50%,-100%);width:22px;height:22px;border-radius:6px;' +
-        'background:#7a3fbf;border:2px solid #fff;box-shadow:0 2px 5px rgba(0,0,0,.4);color:#fff;font-size:11px;' +
-        'display:flex;align-items:center;justify-content:center">' + f.kind.icon + '</div>';
-      L.marker([f.lat, f.lon], { icon: L.divIcon({ className:"", iconSize:[0,0], html }), zIndexOffset: 600 })
-        .addTo(foodLayer).bindPopup('<b>' + f.name + '</b><br>' + f.kind.label + ' · km ' + Math.round(f.km) +
-          '<br><a href="https://www.google.com/maps/dir/?api=1&destination=' + f.lat + ',' + f.lon +
-          '&travelmode=driving" target="_blank" rel="noopener">Yol tarifi</a>');
-    });
-  }
-  // istasyonlarla eşleştir: 150 m içinde yemek varsa o istasyonda yemek var
-  const withFood = new Set();
-  (lastStationPool || []).forEach(x => {
-    if (uniq.some(f => haversine(f, x.s) <= 0.15)) withFood.add(x.s);
-  });
-  tripStep("food", "Yemek & dinlenme tesisleri", "ok", uniq.length + " nokta");
-  const byKind = {};
-  uniq.forEach(f => { byKind[f.kind.label] = (byKind[f.kind.label] || 0) + 1; });
-  const svc = uniq.filter(f => f.kind.key === "services" || f.kind.key === "rest");
-  box.innerHTML =
-    '<div style="border:1px solid var(--border);border-radius:12px;padding:10px 14px;background:var(--surface-1)">' +
-    '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline">' +
-      '<b style="font-size:13.5px">🍽 Yol üstü yemek & dinlenme — ' + uniq.length + ' nokta</b>' +
-      '<span class="mini">' + (Object.keys(byKind).map(k => k + ": " + byKind[k]).join(" · ") || "—") + '</span></div>' +
-    (uniq.length
-      ? '<div style="margin-top:6px;max-height:210px;overflow:auto">' +
-        uniq.slice(0, 40).map(f =>
-          '<div style="display:flex;gap:8px;align-items:baseline;margin:3px 0;font-size:13px;flex-wrap:wrap">' +
-          '<span style="width:52px;flex:none;color:var(--text-muted);font-variant-numeric:tabular-nums">km ' +
-            Math.round(f.km) + '</span>' +
-          '<span style="flex:none">' + f.kind.icon + '</span>' +
-          '<b>' + f.name + '</b>' +
-          '<span class="mini">' + f.kind.label + (f.off > 0.15 ? ' · yoldan ' + Math.round(f.off*1000) + ' m' : ' · yol kenarı') + '</span>' +
-          '<a class="mapslink" style="margin-left:auto" target="_blank" rel="noopener" ' +
-          'href="https://www.google.com/maps/dir/?api=1&destination=' + f.lat + ',' + f.lon + '&travelmode=driving">Git ➜</a></div>').join("") +
-        (uniq.length > 40 ? '<div class="mini">… ve ' + (uniq.length - 40) + ' nokta daha</div>' : '') + '</div>'
-      : '<div class="mini" style="margin-top:5px">Bu rotada kayıtlı yemek noktası bulunamadı.</div>') +
-    (svc.length ? '<div class="mini" style="margin-top:5px">🅿️ Otoyol dinlenme tesisi: ' +
-      svc.map(f => f.name + " (km " + Math.round(f.km) + ")").slice(0,6).join(" · ") + '</div>' : '') +
-    (withFood.size ? '<div class="mini" style="margin-top:4px">⛽🍽 Yemek yeri olan istasyonlar listede <b>🍽</b> ile işaretli.</div>' : '') +
-    '<div class="hint" style="margin-top:5px">Kaynak OpenStreetMap. Türkiye\'de küçük lokantaların çoğu kayıtlı değildir — ' +
-    'burada görünmemesi "yok" anlamına gelmez.</div></div>';
-}
-
 /* ROTA BOYU İSTASYONLAR: güzergâh koridorundaki (±3 km) benzinlikler haritada + uzun boşluk uyarısı */
 async function renderRouteStations(route, seq){
   const box = document.getElementById("routeStations");
@@ -5133,7 +5034,7 @@ async function renderRouteStations(route, seq){
           '<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin:2px 0;font-size:13px">' +
           '<b style="color:' + (i === 0 ? "#0a8a0a" : "var(--text-secondary)") + ';min-width:22px">' + (i+1) + '.</b>' +
           '<b>' + (x.s.brand || "İstasyon") + (isBigBrand(x.s.brand) ? ' <span title="bilinen marka">⭐</span>' : '') +
-          ((lastFood || []).some(fd => haversine(fd, x.s) <= 0.15) ? ' <span title="yakınında yemek yeri var">🍽</span>' : '') + '</b>' +
+          '</b>' +
           '<span class="mini">km ' + Math.round(x.s.km) + (x.s.city ? " · " + x.s.city.name : "") + '</span>' +
           '<b style="color:' + (i === 0 ? "#0a8a0a" : "inherit") + '">≈ ' + fmt(x.price) + ' TL/lt</b>' +
           (i === 0 ? ' <span style="color:#0a8a0a;font-weight:700">🟢 en uygun — haritada yeşil alev</span>'
@@ -5180,7 +5081,6 @@ async function renderRouteStations(route, seq){
       paint(els, prog);                       // yeniden sorgulamadan öneriyi tazele
     });
   };
-  renderRouteFood(route, seq, pts, dense);          // yemek taraması paralel yürüsün
   let els = await overpassChunked(pts, "fuel", 3000, () => seq === routeSeq, paint);
   if (seq !== routeSeq) return;
   /* OpenStreetMap servisi yanıt vermezse rota boyunca istasyon hiç görünmüyordu.
